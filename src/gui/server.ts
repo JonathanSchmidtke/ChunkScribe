@@ -74,6 +74,16 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
     } as GuiEvent)
   }, 1000)
 
+  server.on('error', (e: any) => {
+    if (e?.code === 'EADDRINUSE') {
+      log.err(`GUI port ${opts.port} is already in use — is another ChunkScribe still running?`)
+      log.err(`To kill it: Get-NetTCPConnection -LocalPort ${opts.port} | %{ Stop-Process -Id $_.OwningProcess -Force }`)
+      log.err(`Or change GUI_PORT in .env to a free port and retry.`)
+      process.exit(1)
+    }
+    log.err('GUI http server error:', e?.message)
+  })
+
   server.listen(opts.port, '127.0.0.1', () => {
     log.info(`GUI listening on http://127.0.0.1:${opts.port}`)
     if (opts.autoStart) {
