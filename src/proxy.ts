@@ -207,9 +207,39 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
       catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
+
       const ok = client.state === target.state
-      trace(`s->c ${meta.state}.${meta.name} ${ok ? 'FWD' : `DROP(c=${client.state})`}`)
-      if (!ok) return
+      if (!ok) { trace(`s->c ${meta.state}.${meta.name} DROP(c=${client.state})`); return }
+
+      // mc.createServer drove the client through its own config phase using
+      // minecraft-data's bundled registries, so by the time we get here the
+      // client is already in play state with a (fake) world set up. Forwarding
+      // target's own play `login` packet now would be a second login mid-play
+      // and the client disconnects with a protocol error. Rewrite it as a
+      // respawn, which IS valid in play state and re-initialises the world.
+      if (meta.state === 'play' && meta.name === 'login') {
+        try {
+          const respawnData = {
+            dimension:       data.dimension       ?? data.worldType ?? 0,
+            worldName:       data.worldName       ?? 'minecraft:overworld',
+            hashedSeed:      data.hashedSeed      ?? [0, 0],
+            gamemode:        data.gameMode        ?? 0,
+            previousGamemode: data.previousGameMode ?? -1,
+            isDebug:         data.isDebug         ?? false,
+            isFlat:          data.isFlat          ?? false,
+            copyMetadata:    0,
+            death:           undefined,
+            portalCooldown:  data.portalCooldown  ?? 0,
+            seaLevel:        data.seaLevel        ?? 64,
+          }
+          trace(`s->c REWRITE play.login -> respawn (dim=${respawnData.worldName})`)
+          try { client.write('respawn', respawnData) }
+          catch (e) { trace(`s->c REWRITE_FAIL respawn: ${(e as Error).message}`) }
+          return
+        } catch (e) { trace(`s->c REWRITE setup failed: ${(e as Error).message}`) }
+      }
+
+      trace(`s->c ${meta.state}.${meta.name} FWD`)
       try { client.write(meta.name, data) }
       catch (e) { trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
