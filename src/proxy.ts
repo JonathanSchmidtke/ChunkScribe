@@ -94,10 +94,16 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       activeCapture = null
     }
 
+    const trace = process.env.MCWD_TRACE === '1'
+    const targetReady = () => target.state === client.state
+
     client.on('packet', (data: any, meta: any) => {
-      // Tap client-side packets we need (use_item_on to pair container opens).
       try { capture.observeClientPacket(meta, data) } catch {}
-      if (target.state !== client.state) return
+      if (!targetReady()) {
+        if (trace) log.dbg(`c->s DROP (state c=${client.state} t=${target.state}): ${meta.name}`)
+        return
+      }
+      if (trace) log.dbg(`c->s ${meta.state}.${meta.name}`)
       try { target.write(meta.name, data) }
       catch (e) { log.dbg('c->s write failed', meta.name, (e as Error).message) }
     })
@@ -106,10 +112,18 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
       catch (e) { log.dbg('capture failed', meta.name, (e as Error).message) }
-      if (client.state !== target.state) return
+      if (client.state !== target.state) {
+        if (trace) log.dbg(`s->c DROP (state c=${client.state} t=${target.state}): ${meta.name}`)
+        return
+      }
+      if (trace) log.dbg(`s->c ${meta.state}.${meta.name}`)
       try { client.write(meta.name, data) }
       catch (e) { log.dbg('s->c write failed', meta.name, (e as Error).message) }
     })
+
+    target.on('state', (newState: string, oldState: string) => log.info(`target state: ${oldState} -> ${newState}`))
+    target.on('connect', () => log.info('target TCP connected'))
+    target.on('session', () => log.info('target session ready (auth + handshake done)'))
 
     client.on('end',   () => tearDownSession('client disconnect'))
     target.on('end',   () => tearDownSession('target disconnect'))
