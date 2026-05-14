@@ -1,10 +1,21 @@
 import mc from 'minecraft-protocol'
 import path from 'node:path'
+import fs from 'node:fs'
 import { log } from './util/log'
 import { emit } from './gui/bus'
 import { PhaseTracker } from './phase'
 import { Capture } from './capture'
 import { WorldSaver } from './world/save'
+
+/** Append a single packet-trace line to packets.log (off the GUI). */
+let traceStream: fs.WriteStream | null = null
+function trace(line: string) {
+  if (!traceStream) {
+    try { traceStream = fs.createWriteStream(path.resolve('packets.log'), { flags: 'a' }) }
+    catch { return }
+  }
+  try { traceStream!.write(`${new Date().toISOString()} ${line}\n`) } catch {}
+}
 
 export interface ProxyOpts {
   listenHost: string
@@ -94,43 +105,42 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       activeCapture = null
     }
 
-    const trace = process.env.MCWD_TRACE === '1'
-    const targetReady = () => target.state === client.state
+    trace(`SESSION_START client=${client.username} target=${opts.targetHost}:${opts.targetPort} version=${opts.version}`)
 
     client.on('packet', (data: any, meta: any) => {
       try { capture.observeClientPacket(meta, data) } catch {}
-      if (!targetReady()) {
-        if (trace) log.dbg(`c->s DROP (state c=${client.state} t=${target.state}): ${meta.name}`)
-        return
-      }
-      if (trace) log.dbg(`c->s ${meta.state}.${meta.name}`)
+      const ok = target.state === client.state
+      trace(`c->s ${meta.state}.${meta.name} ${ok ? 'FWD' : `DROP(t=${target.state})`}`)
+      if (!ok) return
       try { target.write(meta.name, data) }
-      catch (e) { log.dbg('c->s write failed', meta.name, (e as Error).message) }
+      catch (e) { trace(`c->s WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
 
     target.on('packet', (data: any, meta: any) => {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
-      catch (e) { log.dbg('capture failed', meta.name, (e as Error).message) }
-      if (client.state !== target.state) {
-        if (trace) log.dbg(`s->c DROP (state c=${client.state} t=${target.state}): ${meta.name}`)
-        return
-      }
-      if (trace) log.dbg(`s->c ${meta.state}.${meta.name}`)
+      catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
+      const ok = client.state === target.state
+      trace(`s->c ${meta.state}.${meta.name} ${ok ? 'FWD' : `DROP(c=${client.state})`}`)
+      if (!ok) return
       try { client.write(meta.name, data) }
-      catch (e) { log.dbg('s->c write failed', meta.name, (e as Error).message) }
+      catch (e) { trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
 
-    target.on('state', (newState: string, oldState: string) => log.info(`target state: ${oldState} -> ${newState}`))
-    target.on('connect', () => log.info('target TCP connected'))
-    target.on('session', () => log.info('target session ready (auth + handshake done)'))
+    target.on('state', (newState: string, oldState: string) => {
+      log.info(`target state: ${oldState} -> ${newState}`)
+      trace(`TARGET_STATE ${oldState} -> ${newState}`)
+    })
+    target.on('connect',  () => { log.info('target TCP connected');         trace('TARGET_TCP_CONNECTED') })
+    target.on('session',  () => { log.info('target session ready');         trace('TARGET_SESSION_READY') })
+    client.on('state', (newState: string, oldState: string) => trace(`CLIENT_STATE ${oldState} -> ${newState}`))
 
-    client.on('end',   () => tearDownSession('client disconnect'))
-    target.on('end',   () => tearDownSession('target disconnect'))
-    client.on('error', (e: any) => { log.err('client error:', e?.message); tearDownSession('client error') })
-    target.on('error', (e: any) => { log.err('target error:', e?.message); tearDownSession('target error') })
-    target.on('kick_disconnect',  (p: any) => log.warn('kicked (play):',  p?.reason))
-    target.on('disconnect',       (p: any) => log.warn('disconnected:',   p?.reason))
+    client.on('end',   () => { trace('CLIENT_END');         tearDownSession('client disconnect') })
+    target.on('end',   () => { trace('TARGET_END');         tearDownSession('target disconnect') })
+    client.on('error', (e: any) => { log.err('client error:', e?.message); trace(`CLIENT_ERROR ${e?.message}`); tearDownSession('client error') })
+    target.on('error', (e: any) => { log.err('target error:', e?.message); trace(`TARGET_ERROR ${e?.message}`); tearDownSession('target error') })
+    target.on('kick_disconnect', (p: any) => { log.warn('kicked (play):', p?.reason); trace(`TARGET_KICK_PLAY ${JSON.stringify(p?.reason)}`) })
+    target.on('disconnect',      (p: any) => { log.warn('disconnected:',  p?.reason); trace(`TARGET_DISCONNECT ${JSON.stringify(p?.reason)}`) })
   })
 
   server.on('error', (e: any) => {
