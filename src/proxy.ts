@@ -212,37 +212,21 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       if (!ok) { trace(`s->c ${meta.state}.${meta.name} DROP(c=${client.state})`); return }
 
       // mc.createServer drove the client through its own config phase using
-      // minecraft-data's bundled registries, so by the time we get here the
-      // client is already in play state with a (fake) world set up. Forwarding
-      // target's own play `login` packet now would be a second login mid-play
-      // and the client disconnects with a protocol error. Rewrite it as a
-      // respawn, which IS valid in play state and re-initialises the world.
+      // bundled registries that don't match target's. Forwarding target's
+      // play.login (or even a rewritten respawn) references dimension/biome
+      // IDs the client's local registry doesn't have — instant disconnect.
       //
-      // For 1.21.x both packets share the SpawnInfo container, exposed as the
-      // `worldState` field on each. We just hand it through and tack on
-      // copyMetadata=0 (drop attributes/effects on re-spawn).
+      // Drop it entirely. The client keeps its bundled overworld world setup
+      // and chunks flow into that. This means dimension switches won't show
+      // correctly, but enough of the play stream is usable to capture chunks.
       if (meta.state === 'play' && meta.name === 'login') {
-        try {
-          const respawnData = {
-            worldState: data.worldState ?? {
-              dimension: 0,
-              name: 'minecraft:overworld',
-              hashedSeed: [0, 0],
-              gamemode: 'survival',
-              previousGamemode: 255,
-              isDebug: false,
-              isFlat: false,
-              death: undefined,
-              portalCooldown: 0,
-              seaLevel: 64,
-            },
-            copyMetadata: 0,
-          }
-          trace(`s->c REWRITE play.login -> respawn (dim=${respawnData.worldState?.name})`)
-          try { client.write('respawn', respawnData) }
-          catch (e) { trace(`s->c REWRITE_FAIL respawn: ${(e as Error).message}`) }
-          return
-        } catch (e) { trace(`s->c REWRITE setup failed: ${(e as Error).message}`) }
+        trace('s->c DROP play.login (registries don\'t match — keeping client\'s bundled world)')
+        return
+      }
+      // Same logic for respawn (dim change to nether/end would fail registry lookup).
+      if (meta.state === 'play' && meta.name === 'respawn') {
+        trace('s->c DROP play.respawn (dim id may not be in client\'s bundled registry)')
+        return
       }
 
       trace(`s->c ${meta.state}.${meta.name} FWD`)
