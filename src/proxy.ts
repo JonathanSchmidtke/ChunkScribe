@@ -81,6 +81,18 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     emit({ type: 'session', state: 'running', detail: `${opts.listenHost}:${opts.listenPort}` })
   })
 
+  // Wire diagnostics at the earliest possible point — login/config phase
+  // packets arrive BEFORE playerJoin fires, so we'd otherwise miss them.
+  server.on('connection', (client: any) => {
+    trace(`CONNECTION from=${client.socket?.remoteAddress}:${client.socket?.remotePort}`)
+    client.on('packet', (_data: any, meta: any) => {
+      trace(`SERVER<-CLIENT ${meta.state}.${meta.name}`)
+    })
+    client.on('state', (n: string, o: string) => trace(`CLIENT_STATE ${o} -> ${n}`))
+    client.on('end',   () => trace('CLIENT_END (pre-playerJoin)'))
+    client.on('error', (e: any) => trace(`CLIENT_ERROR (pre-playerJoin): ${e?.message}`))
+  })
+
   // 'playerJoin' fires after mc.createServer has driven the client all the
   // way through login -> configuration -> play. Using 'login' was firing
   // before configuration was complete, so the client closed when nothing
