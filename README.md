@@ -93,18 +93,34 @@ panels) and press Start. To set persistent defaults, put them in `.env`
 7. On flush, a minimal `level.dat` is written so the save opens in
    singleplayer.
 
+## What's captured
+
+| Capture | How | Save target |
+| --- | --- | --- |
+| Chunks (terrain, blocks, biomes) | `level_chunk_with_light` | Anvil region/ |
+| Block updates (single + section) | `block_update`, `section_blocks_update` | patched into captured chunks |
+| Block entities (signs, banners, beacons…) | `block_entity_data` | chunk NBT |
+| **Container inventories** (chests, barrels, shulkers, hoppers, brewing, furnaces) | client `use_item_on` → server `open_screen` → `window_items` → `close_window` | block entity NBT — **only captures containers you open** |
+| **Entities** (mobs, item frames, paintings, item drops, armor stands, XP orbs) | `spawn_entity` + metadata + position/velocity/rotation/equipment updates | per-chunk Entities NBT (best effort across `prismarine-chunk` versions) |
+| **World state** (spawn, time of day, raining, thundering, difficulty, world border) | `spawn_position`, `update_time`, `game_state_change`, `server_difficulty`, `world_border_*` | `level.dat` |
+| Registries + dimension geometry | `registry_data` config phase | drives chunk parser + dimension subfolders |
+
 ## Known gaps
 
 - **DataVersion in `level.dat`** is hardcoded ballpark; override with
   `MCWD_DATAVERSION` env if Minecraft complains.
-- **Entities/players** are not captured (they're not part of the chunk
-  packet stream you'd expect for "world download" — they're per-entity
-  packets and would need a separate pipeline).
+- **Entity types** are stored by network numeric ID for now; only entities
+  the protocol gives us a string ID for (`minecraft:painting`,
+  `minecraft:experience_orb`) are written to NBT. Mob writeouts depend
+  on `prismarine-chunk` exposing `addEntity` / `entities[]`.
+- **Mob metadata** (custom names, baby flag, variant, etc.) is captured
+  as a raw blob but not yet decoded into NBT fields per entity type.
+- **Player data** (your own inventory, XP, last position) — not captured.
+- **Filled maps** — not captured.
 - **Light data** is loaded into chunks but Minecraft will recompute on
   first open.
 - **Chunk batch acking** is left to minecraft-protocol's defaults; if you
   see the server slow chunk delivery to a crawl, that's the throttle.
-- **No GUI.** Console only.
 
 ## Legal
 

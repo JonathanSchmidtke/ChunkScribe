@@ -61,9 +61,17 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
   }
   bus.on('event', onEvent)
 
-  // Periodic status broadcast (chunk counts, running flag)
+  // Periodic status broadcast (chunk counts, running flag, capture totals)
   const statusTimer = setInterval(() => {
-    onEvent({ type: 'status', running: !!session?.isRunning(), target: session?.opts?.targetHost, chunksByDim: session?.chunksByDim() ?? {} } as GuiEvent)
+    const extra = session?.extraStats() ?? { entities: 0, containers: 0 }
+    onEvent({
+      type: 'status',
+      running: !!session?.isRunning(),
+      target: session?.opts?.targetHost,
+      chunksByDim: session?.chunksByDim() ?? {},
+      entities: extra.entities,
+      containers: extra.containers,
+    } as GuiEvent)
   }, 1000)
 
   server.listen(opts.port, '127.0.0.1', () => {

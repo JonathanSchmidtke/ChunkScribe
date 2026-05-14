@@ -37,6 +37,8 @@ function connectWs() {
     } else if (m.type === 'status') {
       // Periodic status pulse — update counts/running flag, but keep our own chunk sets authoritative.
       state.running = m.running
+      if (typeof m.entities   === 'number') $('entity-count').textContent    = m.entities
+      if (typeof m.containers === 'number') $('container-count').textContent = m.containers
       reflectRunning()
     }
   }

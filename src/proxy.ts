@@ -23,6 +23,8 @@ export interface ProxySession {
   isRunning: () => boolean
   /** chunk counts per dimension, for status polling. */
   chunksByDim: () => Record<string, number>
+  /** Aggregate capture counts (entities, containers). */
+  extraStats: () => { entities: number; containers: number }
 }
 
 export function startProxy(opts: ProxyOpts): ProxySession {
@@ -93,6 +95,8 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     }
 
     client.on('packet', (data: any, meta: any) => {
+      // Tap client-side packets we need (use_item_on to pair container opens).
+      try { capture.observeClientPacket(meta, data) } catch {}
       if (target.state !== client.state) return
       try { target.write(meta.name, data) }
       catch (e) { log.dbg('c->s write failed', meta.name, (e as Error).message) }
@@ -124,6 +128,10 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     opts,
     isRunning: () => running,
     chunksByDim: () => activeCapture?.chunksByDim() ?? {},
+    extraStats: () => ({
+      entities:   activeCapture?.mobs.count() ?? 0,
+      containers: activeCapture?.containers.totalCaptured ?? 0,
+    }),
     stop: async () => {
       if (!running) return
       running = false

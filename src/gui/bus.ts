@@ -6,7 +6,7 @@ export type GuiEvent =
   | { type: 'dim';     dim: string }
   | { type: 'log';     level: 'info' | 'warn' | 'err' | 'dbg'; msg: string; ts: number }
   | { type: 'session'; state: 'starting' | 'running' | 'stopping' | 'stopped' | 'error'; detail?: string }
-  | { type: 'status';  running: boolean; target?: string; chunksByDim?: Record<string, number>; dim?: string }
+  | { type: 'status';  running: boolean; target?: string; chunksByDim?: Record<string, number>; dim?: string; entities?: number; containers?: number }
   | { type: 'flush';   total: number; ok: number }
 
 /** Singleton event bus connecting capture/log -> GUI server. */

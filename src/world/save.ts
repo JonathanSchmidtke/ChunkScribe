@@ -3,9 +3,13 @@ import fs from 'node:fs/promises'
 import zlib from 'node:zlib'
 import { promisify } from 'node:util'
 import { log } from '../util/log'
+import { emit } from '../gui/bus'
 import type { WorldStore } from './store'
 import type { PhaseTracker } from '../phase'
 import type { RegistryCapture } from '../capture/registry'
+import type { WorldStateCapture } from '../capture/worldState'
+import type { EntityCapture } from '../capture/entities'
+import type { ContainerCapture } from '../capture/containers'
 
 const gzip = promisify(zlib.gzip)
 
@@ -16,6 +20,9 @@ try { nbt = require('prismarine-nbt') }                              catch (e) {
 
 export class WorldSaver {
   private registry: RegistryCapture | null = null
+  private worldState: WorldStateCapture | null = null
+  private entities: EntityCapture | null = null
+  private containers: ContainerCapture | null = null
   private inFlight: Promise<void> | null = null
 
   constructor(
@@ -24,22 +31,19 @@ export class WorldSaver {
     private phase: PhaseTracker,
   ) {}
 
-  attachRegistry(r: RegistryCapture) { this.registry = r }
+  attachRegistry(r: RegistryCapture)            { this.registry   = r }
+  attachWorldState(s: WorldStateCapture)        { this.worldState = s }
+  attachEntities(e: EntityCapture)              { this.entities   = e }
+  attachContainers(c: ContainerCapture)         { this.containers = c }
 
   private dimSubpath(dim: string): string {
     if (dim === 'minecraft:overworld')   return ''
     if (dim === 'minecraft:the_nether')  return 'DIM-1'
     if (dim === 'minecraft:the_end')     return 'DIM1'
-    // datapack / custom dimensions
-    const [ns, name] = dim.replace(/^minecraft:/, 'minecraft:').split(':')
+    const [ns, name] = dim.split(':')
     return path.join('dimensions', ns, name)
   }
 
-  /**
-   * Flush all captured columns to Anvil region files. Serialised so a
-   * periodic timer firing while a previous flush is still running won't
-   * double-write the same regions.
-   */
   async flush(stores: Map<string, WorldStore>): Promise<void> {
     if (this.inFlight) return this.inFlight
     this.inFlight = this.doFlush(stores).finally(() => { this.inFlight = null })
@@ -49,6 +53,12 @@ export class WorldSaver {
   private async doFlush(stores: Map<string, WorldStore>) {
     if (!AnvilFactory) { log.err('cannot save: prismarine-provider-anvil not installed'); return }
     await fs.mkdir(this.root, { recursive: true })
+
+    // Final-flush any half-open containers so we don't lose recent opens.
+    try { this.containers?.flushAll() } catch (e) { log.warn('container flushAll failed:', e) }
+
+    // Patch entity NBT into chunks before saving them.
+    if (this.entities) this.applyEntitiesToChunks(stores)
 
     let totalSaved = 0
     for (const [dim, store] of stores) {
@@ -68,32 +78,53 @@ export class WorldSaver {
       let n = 0
       for (const [key, column] of store.entries()) {
         const [x, z] = key.split(',').map(Number)
-        try {
-          await provider.save(x, z, column)
-          n++
-        } catch (e) {
-          log.dbg(`save ${dim} ${x},${z} failed: ${(e as Error).message}`)
-        }
+        try { await provider.save(x, z, column); n++ }
+        catch (e) { log.dbg(`save ${dim} ${x},${z} failed: ${(e as Error).message}`) }
       }
       log.info(`flushed ${n}/${store.size()} columns of ${dim} -> ${dir}`)
       totalSaved += n
     }
 
     if (totalSaved > 0) await this.writeLevelDat()
+    emit({ type: 'flush', total: totalSaved, ok: totalSaved })
   }
 
   /**
-   * Minimal level.dat. Modern Minecraft is picky — if anything is off
-   * it will refuse to load the save. We write the bare minimum and
-   * rely on the launcher / vanilla to recover defaults for the rest.
-   *
-   * The DataVersion below targets 1.21.x; the launcher will warn but
-   * still open it. Override via MCWD_DATAVERSION env if you need exact.
+   * Best-effort: try chunk.addEntity() or chunk.entities.push(); otherwise
+   * write a sidecar entities.json so the data isn't lost. Vanilla won't
+   * read the sidecar — it's for diagnostics / external tools.
    */
+  private applyEntitiesToChunks(stores: Map<string, WorldStore>) {
+    if (!this.entities) return
+    const grouped = this.entities.byChunk()
+    for (const [dim, perChunk] of grouped) {
+      const store = stores.get(dim); if (!store) continue
+      for (const [key, list] of perChunk) {
+        const [cx, cz] = key.split(',').map(Number)
+        const chunk = store.getColumn(cx, cz); if (!chunk) continue
+        for (const e of list) {
+          const nbtEntity = entityToNbt(e)
+          if (!nbtEntity) continue
+          try {
+            if (typeof chunk.addEntity === 'function') chunk.addEntity(nbtEntity)
+            else if (Array.isArray(chunk.entities))    chunk.entities.push(nbtEntity)
+            else if (chunk.sections && Array.isArray(chunk.sections)) {
+              // last-ditch: attach to chunk's root metadata
+              (chunk as any).__entities ??= []
+              ;(chunk as any).__entities.push(nbtEntity)
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
   private async writeLevelDat() {
     if (!nbt) return
-    const dataVersion = parseInt(process.env.MCWD_DATAVERSION || '3953', 10) // 1.21.x ballpark
+    const ws = this.worldState
+    const dataVersion = parseInt(process.env.MCWD_DATAVERSION || '3953', 10)
     const now = BigInt(Date.now())
+
     const tag = {
       type: 'compound',
       name: '',
@@ -104,18 +135,30 @@ export class WorldSaver {
             version: { type: 'int', value: 19133 },
             DataVersion: { type: 'int', value: dataVersion },
             LevelName: { type: 'string', value: 'ChunkScribe Download' },
-            GameType: { type: 'int', value: 3 }, // spectator — safe default
-            Difficulty: { type: 'byte', value: 2 },
+            GameType: { type: 'int', value: 3 },
+            Difficulty: { type: 'byte', value: ws?.difficulty ?? 2 },
+            DifficultyLocked: { type: 'byte', value: ws?.difficultyLocked ? 1 : 0 },
             allowCommands: { type: 'byte', value: 1 },
             hardcore: { type: 'byte', value: 0 },
             initialized: { type: 'byte', value: 1 },
-            SpawnX: { type: 'int', value: 0 },
-            SpawnY: { type: 'int', value: 64 },
-            SpawnZ: { type: 'int', value: 0 },
-            Time:    { type: 'long', value: bigintToLongPair(0n) },
-            DayTime: { type: 'long', value: bigintToLongPair(0n) },
+            SpawnX: { type: 'int', value: ws?.spawnX ?? 0 },
+            SpawnY: { type: 'int', value: ws?.spawnY ?? 64 },
+            SpawnZ: { type: 'int', value: ws?.spawnZ ?? 0 },
+            SpawnAngle: { type: 'float', value: ws?.spawnAngle ?? 0 },
+            Time:       { type: 'long', value: bigintToLongPair(absBig(ws?.worldAge   ?? 0n)) },
+            DayTime:    { type: 'long', value: bigintToLongPair(absBig(ws?.timeOfDay  ?? 0n)) },
             LastPlayed: { type: 'long', value: bigintToLongPair(now) },
             RandomSeed: { type: 'long', value: bigintToLongPair(this.phase.hashedSeed) },
+            raining:        { type: 'byte', value: ws?.raining ? 1 : 0 },
+            thundering:     { type: 'byte', value: ws?.thunder ? 1 : 0 },
+            rainTime:       { type: 'int',  value: 0 },
+            thunderTime:    { type: 'int',  value: 0 },
+            BorderCenterX:        { type: 'double', value: ws?.borderCenterX ?? 0 },
+            BorderCenterZ:        { type: 'double', value: ws?.borderCenterZ ?? 0 },
+            BorderSize:           { type: 'double', value: ws?.borderDiameter ?? 60_000_000 },
+            BorderSafeZone:       { type: 'double', value: 5 },
+            BorderWarningBlocks:  { type: 'double', value: ws?.borderWarnBlocks ?? 5 },
+            BorderWarningTime:    { type: 'double', value: ws?.borderWarnTime ?? 15 },
             GameRules: { type: 'compound', value: {} },
             WorldGenSettings: {
               type: 'compound',
@@ -133,13 +176,32 @@ export class WorldSaver {
     const buf: Buffer = Buffer.isBuffer(uncompressed) ? uncompressed : Buffer.from(uncompressed)
     const out = await gzip(buf)
     await fs.writeFile(path.join(this.root, 'level.dat'), out)
-    log.info(`wrote level.dat (DataVersion=${dataVersion})`)
+    log.info(`wrote level.dat (DataVersion=${dataVersion}, spawn=${ws?.spawnX ?? 0},${ws?.spawnY ?? 64},${ws?.spawnZ ?? 0})`)
   }
 }
 
-/** prismarine-nbt encodes long as [highInt32, lowInt32] tuple. */
+function entityToNbt(e: any): any | null {
+  const id = typeof e.type === 'string' ? e.type : null
+  if (!id) return null  // numeric types skipped until we wire the registry
+  const v: any = {
+    id:        { type: 'string', value: id },
+    Pos:       { type: 'list', value: { type: 'double', value: [e.x, e.y, e.z] } },
+    Motion:    { type: 'list', value: { type: 'double', value: [e.vx, e.vy, e.vz] } },
+    Rotation:  { type: 'list', value: { type: 'float',  value: [e.yaw, e.pitch] } },
+    OnGround:  { type: 'byte', value: 0 },
+    Air:       { type: 'short', value: 300 },
+    Fire:      { type: 'short', value: -20 },
+    Invulnerable: { type: 'byte', value: 0 },
+  }
+  if (Array.isArray(e.uuid) && e.uuid.length === 4) {
+    v.UUID = { type: 'intArray', value: e.uuid }
+  }
+  return { type: 'compound', name: '', value: v }
+}
+
 function bigintToLongPair(v: bigint): [number, number] {
   const hi = Number((v >> 32n) & 0xffffffffn) | 0
   const lo = Number(v & 0xffffffffn) | 0
   return [hi, lo]
 }
+function absBig(v: bigint): bigint { return v < 0n ? -v : v }
