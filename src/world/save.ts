@@ -96,7 +96,12 @@ export class WorldSaver {
    */
   private applyEntitiesToChunks(stores: Map<string, WorldStore>) {
     if (!this.entities) return
+    // Last chance to resolve any entity types that spawned before the
+    // registry was populated.
+    this.entities.resolvePending()
+
     const grouped = this.entities.byChunk()
+    let written = 0, dropped = 0
     for (const [dim, perChunk] of grouped) {
       const store = stores.get(dim); if (!store) continue
       for (const [key, list] of perChunk) {
@@ -104,19 +109,20 @@ export class WorldSaver {
         const chunk = store.getColumn(cx, cz); if (!chunk) continue
         for (const e of list) {
           const nbtEntity = entityToNbt(e)
-          if (!nbtEntity) continue
+          if (!nbtEntity) { dropped++; continue }
           try {
             if (typeof chunk.addEntity === 'function') chunk.addEntity(nbtEntity)
             else if (Array.isArray(chunk.entities))    chunk.entities.push(nbtEntity)
-            else if (chunk.sections && Array.isArray(chunk.sections)) {
-              // last-ditch: attach to chunk's root metadata
+            else {
               (chunk as any).__entities ??= []
               ;(chunk as any).__entities.push(nbtEntity)
             }
-          } catch {}
+            written++
+          } catch { dropped++ }
         }
       }
     }
+    if (written + dropped > 0) log.info(`entities patched into chunks: ${written} written, ${dropped} dropped (unresolved type)`)
   }
 
   private async writeLevelDat() {
@@ -181,22 +187,50 @@ export class WorldSaver {
 }
 
 function entityToNbt(e: any): any | null {
-  const id = typeof e.type === 'string' ? e.type : null
-  if (!id) return null  // numeric types skipped until we wire the registry
+  const id: string | null = e.typeName ?? null
+  if (!id) return null   // unresolved numeric type — skip rather than corrupt the save
+
+  const m = e.meta ?? {}
   const v: any = {
     id:        { type: 'string', value: id },
-    Pos:       { type: 'list', value: { type: 'double', value: [e.x, e.y, e.z] } },
-    Motion:    { type: 'list', value: { type: 'double', value: [e.vx, e.vy, e.vz] } },
-    Rotation:  { type: 'list', value: { type: 'float',  value: [e.yaw, e.pitch] } },
-    OnGround:  { type: 'byte', value: 0 },
-    Air:       { type: 'short', value: 300 },
-    Fire:      { type: 'short', value: -20 },
+    Pos:       { type: 'list',  value: { type: 'double', value: [e.x, e.y, e.z] } },
+    Motion:    { type: 'list',  value: { type: 'double', value: [e.vx, e.vy, e.vz] } },
+    Rotation:  { type: 'list',  value: { type: 'float',  value: [e.yaw, e.pitch] } },
+    OnGround:  { type: 'byte',  value: 0 },
+    Air:       { type: 'short', value: clampShort(m.Air ?? 300) },
+    Fire:      { type: 'short', value: m.OnFire ? 200 : -20 },
     Invulnerable: { type: 'byte', value: 0 },
+    Glowing:   { type: 'byte',  value: m.Glowing   ? 1 : 0 },
+    Invisible: { type: 'byte',  value: m.Invisible ? 1 : 0 },
+    Silent:    { type: 'byte',  value: m.Silent    ? 1 : 0 },
+    NoGravity: { type: 'byte',  value: m.NoGravity ? 1 : 0 },
   }
   if (Array.isArray(e.uuid) && e.uuid.length === 4) {
     v.UUID = { type: 'intArray', value: e.uuid }
   }
+  if (typeof m.CustomName === 'string') {
+    v.CustomName = { type: 'string', value: m.CustomName }
+    if (m.CustomNameVisible) v.CustomNameVisible = { type: 'byte', value: 1 }
+  }
+  if (typeof m.Health === 'number') {
+    v.Health = { type: 'float', value: m.Health }
+  }
+  if (typeof m.IsBaby === 'boolean') {
+    v.IsBaby = { type: 'byte', value: m.IsBaby ? 1 : 0 }
+  }
+  if (typeof m.TicksFrozen === 'number' && m.TicksFrozen > 0) {
+    v.TicksFrozen = { type: 'int', value: m.TicksFrozen }
+  }
+  if (typeof m.Pose === 'string' && m.Pose !== 'STANDING') {
+    v.Pose = { type: 'compound', value: {} } // vanilla rebuilds on tick; leaving as empty marker
+  }
   return { type: 'compound', name: '', value: v }
+}
+
+function clampShort(n: number): number {
+  if (n > 32767) return 32767
+  if (n < -32768) return -32768
+  return n | 0
 }
 
 function bigintToLongPair(v: bigint): [number, number] {

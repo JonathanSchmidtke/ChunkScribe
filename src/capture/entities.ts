@@ -1,33 +1,28 @@
 import { log } from '../util/log'
+import { EntityTypeResolver } from './entityTypes'
+import { decodeEntityMetadata, DecodedMetadata } from './entityMetadata'
 import type { WorldStore } from '../world/store'
 
-interface CapturedEntity {
+export interface CapturedEntity {
   networkId: number
-  type: number | string         // numeric type from spawn_entity, or 'painting'
-  uuid?: number[]               // 4 int32s
+  /** Resolved `minecraft:name`. Null until the type resolver finds it. */
+  typeName: string | null
+  /** Raw numeric type from the protocol — kept around in case the resolver lags. */
+  numericType: number | null
+  uuid?: number[]
   x: number; y: number; z: number
   vx: number; vy: number; vz: number
   yaw: number; pitch: number; headYaw: number
-  metadata?: any
+  meta: DecodedMetadata
   equipment?: any
   dim: string
 }
 
 /**
  * Tracks living entities (mobs, item frames, paintings, item drops,
- * armor stands, XP orbs) sent by the server. We treat each entity ID
- * as a record we update with spawn/metadata/position/equipment packets,
- * delete on destroy.
- *
- * Caveats (v1):
- *  - Entity type is a network numeric ID. Mapping to "minecraft:zombie"
- *    needs the entity_type registry that prismarine-registry ships with
- *    minecraft-data; we leave the numeric ID in place and let the saver
- *    resolve when writing NBT.
- *  - We don't decode entity-type-specific metadata (Age, IsBaby, custom
- *    name, ...). Metadata is stashed as a raw blob.
- *  - Items frames and paintings have a fixed orientation field we don't
- *    yet decode.
+ * armor stands, XP orbs) sent by the server. Each entity ID is a record
+ * we update with spawn/metadata/position/equipment packets and delete
+ * on destroy.
  */
 export class EntityCapture {
   private entities = new Map<number, CapturedEntity>()
@@ -36,19 +31,30 @@ export class EntityCapture {
   constructor(
     private getStore: () => WorldStore,
     private getDim: () => string,
+    private types: EntityTypeResolver,
   ) {}
 
   onSpawn(p: any, packetName: string) {
     const id = p.entityId
     if (typeof id !== 'number') return
+
     const isPainting = packetName.includes('painting')
     const isOrb      = packetName.includes('xp') || packetName.includes('experience_orb')
 
+    let typeName: string | null = null
+    let numericType: number | null = null
+
+    if (isPainting)  typeName = 'minecraft:painting'
+    else if (isOrb)  typeName = 'minecraft:experience_orb'
+    else {
+      numericType = (p.type ?? p.entityType ?? null) as number | null
+      typeName = this.types.resolve(numericType ?? undefined)
+    }
+
     const e: CapturedEntity = {
       networkId: id,
-      type: isPainting ? 'minecraft:painting'
-          : isOrb      ? 'minecraft:experience_orb'
-          : (p.type ?? p.entityType ?? -1),
+      typeName,
+      numericType,
       uuid: Array.isArray(p.objectUUID) ? p.objectUUID : Array.isArray(p.entityUUID) ? p.entityUUID : undefined,
       x: p.x ?? 0, y: p.y ?? 0, z: p.z ?? 0,
       vx: (p.velocityX ?? 0) / 8000,
@@ -57,6 +63,7 @@ export class EntityCapture {
       yaw:    decodeAngle(p.yaw),
       pitch:  decodeAngle(p.pitch),
       headYaw: decodeAngle(p.headPitch ?? p.headYaw ?? p.yaw),
+      meta: {},
       dim: this.getDim(),
     }
     this.entities.set(id, e)
@@ -65,7 +72,9 @@ export class EntityCapture {
 
   onMetadata(p: any) {
     const e = this.entities.get(p.entityId); if (!e) return
-    e.metadata = p.metadata
+    const decoded = decodeEntityMetadata(p.metadata)
+    // Merge — keep existing fields for indices we didn't see this time.
+    Object.assign(e.meta, decoded)
   }
 
   onEquipment(p: any) {
@@ -82,11 +91,11 @@ export class EntityCapture {
 
   onPosition(p: any) {
     const e = this.entities.get(p.entityId); if (!e) return
-    // entity_position is a delta in some versions, absolute in others.
+    // entity_teleport gives absolute coords; entity_position/entity_position_and_rotation
+    // give deltas in fixed-point. We pick by magnitude — deltas are sub-block.
     if (typeof p.x === 'number' && Math.abs(p.x) > 4) {
       e.x = p.x; e.y = p.y; e.z = p.z
     } else {
-      // delta in 1/4096 of a block (or in 1/128 on legacy)
       const scale = 4096
       e.x += (p.dX ?? 0) / scale
       e.y += (p.dY ?? 0) / scale
@@ -110,6 +119,18 @@ export class EntityCapture {
     for (const id of ids) this.entities.delete(id)
   }
 
+  /**
+   * Late-attempt to resolve types for entities that spawned before the
+   * registry was ready. Called from the saver before writing NBT.
+   */
+  resolvePending() {
+    for (const e of this.entities.values()) {
+      if (!e.typeName && e.numericType != null) {
+        e.typeName = this.types.resolve(e.numericType)
+      }
+    }
+  }
+
   /** Group entities by (dimension, chunkX, chunkZ) for save time. */
   byChunk(): Map<string, Map<string, CapturedEntity[]>> {
     const out = new Map<string, Map<string, CapturedEntity[]>>()
@@ -126,10 +147,14 @@ export class EntityCapture {
   }
 
   count(): number { return this.entities.size }
+  countResolved(): number {
+    let n = 0
+    for (const e of this.entities.values()) if (e.typeName) n++
+    return n
+  }
 }
 
 function decodeAngle(a: number | undefined): number {
   if (typeof a !== 'number') return 0
-  // 1 byte angle: 0..255 maps to 0..360 deg
   return (a / 256) * 360
 }

@@ -109,12 +109,15 @@ panels) and press Start. To set persistent defaults, put them in `.env`
 
 - **DataVersion in `level.dat`** is hardcoded ballpark; override with
   `MCWD_DATAVERSION` env if Minecraft complains.
-- **Entity types** are stored by network numeric ID for now; only entities
-  the protocol gives us a string ID for (`minecraft:painting`,
-  `minecraft:experience_orb`) are written to NBT. Mob writeouts depend
-  on `prismarine-chunk` exposing `addEntity` / `entities[]`.
-- **Mob metadata** (custom names, baby flag, variant, etc.) is captured
-  as a raw blob but not yet decoded into NBT fields per entity type.
+- **Entity type names** are resolved via `prismarine-registry` for the
+  configured MC version. Entities whose numeric ID isn't in the registry
+  (very recently added mobs on a too-old `minecraft-data`) are dropped at
+  save time and logged.
+- **Mob metadata decoded into NBT** covers the universal Entity + LivingEntity
+  fields: `CustomName` + visibility, `Silent`, `NoGravity`, `Glowing`,
+  `Invisible`, `Air`, `Fire`, `Health`, `IsBaby`, `TicksFrozen`. Subclass-
+  specific metadata (villager profession, axolotl variant, painting motive,
+  item-frame contents, …) is not yet decoded.
 - **Player data** (your own inventory, XP, last position) — not captured.
 - **Filled maps** — not captured.
 - **Light data** is loaded into chunks but Minecraft will recompute on

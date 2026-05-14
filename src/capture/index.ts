@@ -8,6 +8,7 @@ import { BlockEntityCapture } from './blockEntities'
 import { WorldStateCapture } from './worldState'
 import { ContainerCapture } from './containers'
 import { EntityCapture } from './entities'
+import { EntityTypeResolver } from './entityTypes'
 import { WorldStore } from '../world/store'
 import type { WorldSaver } from '../world/save'
 
@@ -31,7 +32,8 @@ export class Capture {
     this.blocks        = new BlockUpdateCapture(() => this.activeStore())
     this.blockEntities = new BlockEntityCapture(() => this.activeStore())
     this.containers    = new ContainerCapture(() => this.activeStore())
-    this.mobs          = new EntityCapture(() => this.activeStore(), () => this.phase.dimensionName)
+    const typeResolver = new EntityTypeResolver(version)
+    this.mobs          = new EntityCapture(() => this.activeStore(), () => this.phase.dimensionName, typeResolver)
     saver.attachRegistry(this.registry)
     saver.attachWorldState(this.worldState)
     saver.attachEntities(this.mobs)
