@@ -1,10 +1,31 @@
 import 'dotenv/config'
 import os from 'node:os'
 import path from 'node:path'
-import open from 'open'
+import { spawn } from 'node:child_process'
 import { log } from './util/log'
 import { startGui } from './gui/server'
 import type { ProxyOpts } from './proxy'
+
+/**
+ * Open a URL in the user's default browser. We use OS commands directly
+ * instead of the npm `open` package because (a) modern `open` is ESM-only
+ * and breaks our CJS build, and (b) `start ""` on Windows is bulletproof.
+ */
+function openBrowser(url: string) {
+  log.info(`opening browser: ${url}`)
+  try {
+    if (process.platform === 'win32') {
+      // `start "" "url"` — empty title is required when the path has quotes
+      spawn('cmd', ['/c', 'start', '""', url], { detached: true, stdio: 'ignore', shell: false }).unref()
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+    }
+  } catch (e) {
+    log.warn('could not open browser:', (e as Error).message)
+  }
+}
 
 function defaultDownloadsDir(): string {
   return path.join(os.homedir(), 'Downloads')
@@ -41,11 +62,10 @@ function main() {
   const gui = startGui({ port: guiPort, defaults, publicDir, autoStart })
 
   if (!noBrowser) {
-    setTimeout(() => {
-      open(gui.url).catch((e: Error) => log.warn('could not open browser:', e.message))
-    }, 250)
+    setTimeout(() => openBrowser(gui.url), 400)
+  } else {
+    log.info(`open ${gui.url} in your browser`)
   }
-  log.info(`open ${gui.url} in your browser`)
 
   const shutdown = (sig: string) => {
     log.info(`received ${sig}, shutting down`)
