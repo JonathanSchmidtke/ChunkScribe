@@ -44,6 +44,22 @@ export function startProxy(opts: ProxyOpts): ProxySession {
   log.info(`world output: ${worldDir}`)
   emit({ type: 'session', state: 'starting', detail: `${opts.targetHost}:${opts.targetPort}` })
 
+  // mc.createServer's offline-mode config phase writes registry_data
+  // from `options.registryCodec`. Without it, 1.21.5+ clients receive an
+  // empty registry and close 70ms into the configuration state. Feed it
+  // the bundled minecraft-data login packet so the client can finish
+  // configuration cleanly. (We still overwrite the world with the target
+  // server's data once the bridge is up.)
+  let registryCodec: any = {}
+  try {
+    const mcData = require('minecraft-data')(opts.version)
+    registryCodec = mcData?.loginPacket?.dimensionCodec || {}
+    const keys = Object.keys(registryCodec)
+    log.info(`registryCodec ${keys.length ? `loaded (${keys.length} registries)` : 'EMPTY — config phase will likely fail'}`)
+  } catch (e) {
+    log.warn(`minecraft-data load failed for ${opts.version}: ${(e as Error).message}`)
+  }
+
   const server = mc.createServer({
     'online-mode': false,
     host: opts.listenHost,
@@ -52,7 +68,8 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     motd: 'ChunkScribe Proxy',
     maxPlayers: 1,
     keepAlive: false,
-  })
+    registryCodec,
+  } as any)
 
   let activeClient: any = null
   let activeTarget: any = null
@@ -64,8 +81,13 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     emit({ type: 'session', state: 'running', detail: `${opts.listenHost}:${opts.listenPort}` })
   })
 
-  server.on('login', (client: any) => {
-    log.info(`client connected: ${client.username}`)
+  // 'playerJoin' fires after mc.createServer has driven the client all the
+  // way through login -> configuration -> play. Using 'login' was firing
+  // before configuration was complete, so the client closed when nothing
+  // came back from the proxy in config state.
+  server.on('playerJoin', (client: any) => {
+    log.info(`client connected: ${client.username} (state=${client.state})`)
+    trace(`PLAYER_JOIN client=${client.username} state=${client.state}`)
 
     const phase = new PhaseTracker()
     const saver = new WorldSaver(worldDir, opts.version, phase)
