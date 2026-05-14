@@ -1,0 +1,36 @@
+{
+  "name": "chunkscribe",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Minecraft 1.21.11 MITM proxy that downloads the world to Anvil format while you play.",
+  "main": "dist/index.js",
+  "bin": {
+    "chunkscribe": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node --enable-source-maps dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "minecraft",
+    "proxy",
+    "world-downloader",
+    "anvil",
+    "1.21"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "minecraft-protocol": "^1.57.0",
+    "prismarine-chunk": "^1.45.0",
+    "prismarine-nbt": "^2.6.0",
+    "prismarine-provider-anvil": "^2.7.0",
+    "prismarine-registry": "^1.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}
