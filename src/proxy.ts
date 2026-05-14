@@ -17,6 +17,42 @@ function trace(line: string) {
   try { traceStream!.write(`${new Date().toISOString()} ${line}\n`) } catch {}
 }
 
+/**
+ * Minimum tag bundle Minecraft 1.21.11 expects defined before it will
+ * accept `finish_configuration`. Pulled directly from the client crash
+ * report's "Unbound tags" list. We bind them all to empty entry sets —
+ * the client just needs the tags to *exist*, not to contain anything.
+ */
+const MIN_TAGS = [
+  {
+    tagType: 'minecraft:dialog',
+    tags: [
+      { tagName: 'minecraft:pause_screen_additions', entries: [] as number[] },
+      { tagName: 'minecraft:quick_actions',          entries: [] as number[] },
+    ],
+  },
+  {
+    tagType: 'minecraft:enchantment',
+    tags: [
+      { tagName: 'minecraft:exclusive_set/armor',    entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/boots',    entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/bow',      entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/crossbow', entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/damage',   entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/mining',   entries: [] as number[] },
+      { tagName: 'minecraft:exclusive_set/riptide',  entries: [] as number[] },
+    ],
+  },
+  {
+    tagType: 'minecraft:timeline',
+    tags: [
+      { tagName: 'minecraft:in_end',       entries: [] as number[] },
+      { tagName: 'minecraft:in_nether',    entries: [] as number[] },
+      { tagName: 'minecraft:in_overworld', entries: [] as number[] },
+    ],
+  },
+]
+
 export interface ProxyOpts {
   listenHost: string
   listenPort: number
@@ -81,35 +117,31 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     emit({ type: 'session', state: 'running', detail: `${opts.listenHost}:${opts.listenPort}` })
   })
 
-  // Wire diagnostics + protocol-completeness shims at the earliest possible
-  // point. Login/config phase packets arrive BEFORE playerJoin fires, so
-  // we'd otherwise miss them, and minecraft-protocol's server-side doesn't
-  // send feature_flags / select_known_packs which 1.21.x clients want
-  // during config phase.
+  // Diagnostics + protocol-completeness shims at the earliest possible point.
+  // 1.21.x clients (especially 1.21.11) reject finish_configuration if the
+  // server hasn't defined certain tag bundles referenced in the registries
+  // (dialog/pause_screen_additions, enchantment/exclusive_set/*, timeline/*).
+  // mc.createServer never sends a `tags` packet, so we monkey-patch
+  // client.write to inject one right before finish_configuration. Same trick
+  // for feature_flags, which the client expects before transitioning to play.
   server.on('connection', (client: any) => {
     trace(`CONNECTION from=${client.socket?.remoteAddress}:${client.socket?.remotePort}`)
-    client.on('packet', (_data: any, meta: any) => {
-      trace(`SERVER<-CLIENT ${meta.state}.${meta.name}`)
-    })
-    client.on('state', (newState: string, oldState: string) => {
-      trace(`CLIENT_STATE ${oldState} -> ${newState}`)
-      if (newState === 'configuration') {
-        // Inject the packets minecraft-protocol's server-side forgets.
-        // setImmediate puts them after mc.createServer's own registry_data
-        // writes, so the order is:
-        //   registry_data (many) -> feature_flags -> select_known_packs -> finish_configuration
-        setImmediate(() => {
-          try {
-            client.write('feature_flags', { features: ['minecraft:vanilla'] })
-            trace('SHIM_SENT feature_flags')
-          } catch (e) { trace(`SHIM_FAIL feature_flags: ${(e as Error).message}`) }
-          try {
-            client.write('select_known_packs', { packs: [] })
-            trace('SHIM_SENT select_known_packs')
-          } catch (e) { trace(`SHIM_FAIL select_known_packs: ${(e as Error).message}`) }
-        })
+
+    const origWrite = client.write.bind(client)
+    let preludeSent = false
+    client.write = (name: string, data: any) => {
+      if (!preludeSent && name === 'finish_configuration' && client.state === 'configuration') {
+        preludeSent = true
+        try { origWrite('feature_flags', { features: ['minecraft:vanilla'] }); trace('SHIM feature_flags sent') }
+        catch (e) { trace(`SHIM feature_flags FAIL: ${(e as Error).message}`) }
+        try { origWrite('tags', { tags: MIN_TAGS }); trace('SHIM tags sent') }
+        catch (e) { trace(`SHIM tags FAIL: ${(e as Error).message}`) }
       }
-    })
+      return origWrite(name, data)
+    }
+
+    client.on('packet', (_data: any, meta: any) => trace(`SERVER<-CLIENT ${meta.state}.${meta.name}`))
+    client.on('state', (n: string, o: string) => trace(`CLIENT_STATE ${o} -> ${n}`))
     client.on('end',   () => trace('CLIENT_END (pre-playerJoin)'))
     client.on('error', (e: any) => trace(`CLIENT_ERROR (pre-playerJoin): ${e?.message}`))
   })
