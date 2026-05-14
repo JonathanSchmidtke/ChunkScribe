@@ -1,4 +1,5 @@
 import { log } from '../util/log'
+import { emit } from '../gui/bus'
 import type { PhaseTracker } from '../phase'
 import { RegistryCapture } from './registry'
 import { ChunkCapture } from './chunks'
@@ -33,7 +34,15 @@ export class Capture {
       this.stores.set(this.phase.dimensionName, s)
       log.info(`new dimension store: ${this.phase.dimensionName}`)
     }
+    emit({ type: 'dim', dim: this.phase.dimensionName })
     return s
+  }
+
+  /** Aggregate chunk counts by dimension for status events. */
+  chunksByDim(): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const [dim, store] of this.stores) out[dim] = store.size()
+    return out
   }
 
   handle(meta: any, data: any) {

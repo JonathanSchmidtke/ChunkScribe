@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ChunkScribe</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">⛏</span>
+      <span class="title">ChunkScribe</span>
+      <span class="version" id="version-tag">1.21.11</span>
+    </div>
+    <div class="status">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">idle</span>
+    </div>
+  </header>
+
+  <main>
+    <aside class="panel" id="settings">
+      <h2>Connection</h2>
+      <label>Target server
+        <input type="text" id="targetHost" placeholder="play.example.com" />
+      </label>
+      <label>Target port
+        <input type="number" id="targetPort" value="25565" />
+      </label>
+      <label>Microsoft account (optional)
+        <input type="text" id="msEmail" placeholder="you@example.com" />
+      </label>
+
+      <h2>Local proxy</h2>
+      <label>Listen port
+        <input type="number" id="listenPort" value="25566" />
+      </label>
+      <label>Minecraft version
+        <input type="text" id="version" value="1.21.11" />
+      </label>
+
+      <h2>Output</h2>
+      <label>Save folder
+        <input type="text" id="outputDir" placeholder="(your Downloads folder)" />
+      </label>
+      <label>Flush every (seconds)
+        <input type="number" id="flushIntervalSec" value="30" min="0" />
+      </label>
+
+      <div class="actions">
+        <button id="btn-start" class="primary">Start</button>
+        <button id="btn-stop"  class="danger" disabled>Stop</button>
+      </div>
+
+      <p class="hint">
+        After starting, connect Minecraft to <code>127.0.0.1:<span id="hint-port">25566</span></code>.
+      </p>
+    </aside>
+
+    <section class="panel map-panel">
+      <div class="map-header">
+        <h2>Chunk map</h2>
+        <div class="dim-tabs" id="dim-tabs"></div>
+        <div class="map-stats">
+          <span id="chunk-count">0</span> chunks
+          <span class="sep">·</span>
+          <span id="active-dim">overworld</span>
+        </div>
+      </div>
+      <canvas id="map"></canvas>
+      <div class="map-help">drag to pan · scroll to zoom · press <kbd>R</kbd> to recenter</div>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>Log</h2>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

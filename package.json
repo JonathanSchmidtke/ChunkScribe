@@ -23,13 +23,16 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "minecraft-protocol": "^1.57.0",
+    "open": "^10.1.0",
     "prismarine-chunk": "^1.45.0",
     "prismarine-nbt": "^2.6.0",
     "prismarine-provider-anvil": "^2.7.0",
-    "prismarine-registry": "^1.11.0"
+    "prismarine-registry": "^1.11.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0"
   }

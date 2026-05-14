@@ -16,18 +16,19 @@ packages, lower `MC_VERSION` in `.env` to a release that is.
 ```powershell
 cd "$env:USERPROFILE\Documents\Minecraft\MCWD"
 npm install
-Copy-Item .env.example .env
-# edit .env: at minimum TARGET_HOST and TARGET_PORT
+Copy-Item .env.example .env       # optional — defaults work for the GUI
 npm run dev
 ```
 
-First run will pop a Microsoft device-code prompt in the console. Sign in with
-the account that owns Minecraft. Tokens cache to `.auth/`.
+A browser tab opens at `http://127.0.0.1:7878` with the ChunkScribe GUI:
 
-In Minecraft (the same version you set in `MC_VERSION`):
-
-- Multiplayer → Direct Connect → `127.0.0.1:25566`
-- Play normally. Walk/fly around to load chunks. Each loaded chunk is captured.
+1. Enter the **target server** address (e.g. `play.example.com`)
+2. Press **Start**
+3. The first time you connect, a **Microsoft device-code prompt** appears in
+   the console. Open the URL on any device, type the 8-char code, approve.
+   Subsequent runs use the cached token in `.auth/` (no prompt).
+4. In Minecraft, **Multiplayer → Direct Connect → `127.0.0.1:25566`**
+5. Walk/fly around. Captured chunks appear as green squares on the live map.
 
 ## Output
 
@@ -52,35 +53,44 @@ OUTPUT_DIR=%APPDATA%\.minecraft\saves
 
 ## Settings
 
-All in `.env` (see `.env.example`):
+You can edit settings live in the GUI (Connection / Local proxy / Output
+panels) and press Start. To set persistent defaults, put them in `.env`
+(see [.env.example](.env.example)):
 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `LISTEN_HOST` | `127.0.0.1` | Proxy bind host |
 | `LISTEN_PORT` | `25566` | Port your MC client connects to |
-| `TARGET_HOST` | — | Real server hostname |
+| `TARGET_HOST` | — | Real server hostname (filled in GUI if blank) |
 | `TARGET_PORT` | `25565` | Real server port |
 | `MS_EMAIL` | — | Microsoft account hint (optional) |
 | `MC_VERSION` | `1.21.11` | Protocol version, must match TARGET |
 | `OUTPUT_DIR` | `~/Downloads` | Where worlds are written |
 | `FLUSH_INTERVAL_SEC` | `30` | Periodic disk flush |
-| `DEBUG` | — | Set to anything for verbose packet logs |
+| `GUI_PORT` | `7878` | HTTP port the GUI binds |
+| `NO_BROWSER` | — | `1` = don't auto-open browser |
+| `AUTO_START` | — | `1` = launch proxy on startup with `.env` values |
+| `DEBUG` | — | Verbose packet logs |
 
 ## How it works
 
-1. **Inbound listener** (`mc.createServer`, offline-mode) accepts your client
-   in cleartext.
-2. **Outbound client** (`mc.createClient`, microsoft auth) connects to the
+1. **GUI** (Node HTTP + WebSocket on `127.0.0.1:7878`) serves a small SPA
+   with a settings form, live chunk map (canvas), and log tail.
+2. **Inbound listener** (`mc.createServer`, offline-mode) accepts your MC
+   client in cleartext on `127.0.0.1:25566`.
+3. **Outbound client** (`mc.createClient`, microsoft auth) connects to the
    real server, doing the encrypted handshake with your account's session.
-3. Every packet is forwarded in both directions. Server→client packets are
+4. Every packet is forwarded in both directions. Server→client packets are
    also passed through a capture pipeline that recognises:
    - configuration phase: `registry_data`, `feature_flags`
    - play phase: `level_chunk_with_light`, `block_update`,
      `section_blocks_update`, `block_entity_data`, `respawn`, `login`
-4. Chunks are parsed via `prismarine-chunk` into the same column structure
-   the vanilla save format uses, accumulated per-dimension in memory, and
-   flushed to Anvil region files by `prismarine-provider-anvil`.
-5. On flush, a minimal `level.dat` is written so the save opens in
+5. Chunks are parsed via `prismarine-chunk` into the same column structure
+   the vanilla save format uses, accumulated per-dimension in memory,
+   and flushed to Anvil region files by `prismarine-provider-anvil`.
+6. Each captured chunk also fires an event on an internal bus → the GUI
+   WebSocket → live map.
+7. On flush, a minimal `level.dat` is written so the save opens in
    singleplayer.
 
 ## Known gaps

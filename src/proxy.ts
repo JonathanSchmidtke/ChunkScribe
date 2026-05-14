@@ -1,6 +1,7 @@
 import mc from 'minecraft-protocol'
 import path from 'node:path'
 import { log } from './util/log'
+import { emit } from './gui/bus'
 import { PhaseTracker } from './phase'
 import { Capture } from './capture'
 import { WorldSaver } from './world/save'
@@ -16,10 +17,19 @@ export interface ProxyOpts {
   flushIntervalSec: number
 }
 
-export function startProxy(opts: ProxyOpts) {
+export interface ProxySession {
+  opts: ProxyOpts
+  stop: () => Promise<void>
+  isRunning: () => boolean
+  /** chunk counts per dimension, for status polling. */
+  chunksByDim: () => Record<string, number>
+}
+
+export function startProxy(opts: ProxyOpts): ProxySession {
   const worldDir = path.join(opts.outputDir, sanitize(opts.targetHost))
   log.info(`listening on ${opts.listenHost}:${opts.listenPort} -> ${opts.targetHost}:${opts.targetPort}`)
   log.info(`world output: ${worldDir}`)
+  emit({ type: 'session', state: 'starting', detail: `${opts.targetHost}:${opts.targetPort}` })
 
   const server = mc.createServer({
     'online-mode': false,
@@ -28,7 +38,17 @@ export function startProxy(opts: ProxyOpts) {
     version: opts.version,
     motd: 'ChunkScribe Proxy',
     maxPlayers: 1,
-    keepAlive: false, // let the target server's keep-alives flow through
+    keepAlive: false,
+  })
+
+  let activeClient: any = null
+  let activeTarget: any = null
+  let activeCapture: Capture | null = null
+  let flushTimer: NodeJS.Timeout | null = null
+  let running = true
+
+  server.on('listening', () => {
+    emit({ type: 'session', state: 'running', detail: `${opts.listenHost}:${opts.listenPort}` })
   })
 
   server.on('login', (client: any) => {
@@ -48,31 +68,36 @@ export function startProxy(opts: ProxyOpts) {
       keepAlive: false,
     })
 
-    let ended = false
-    const teardown = async (reason: string) => {
-      if (ended) return
-      ended = true
-      log.info(`teardown: ${reason}`)
-      try { await saver.flush(capture.stores) } catch (e) { log.err('final flush failed:', e) }
-      try { client.end(reason) } catch {}
-      try { target.end(reason) } catch {}
-      if (flushTimer) clearInterval(flushTimer)
-    }
+    activeClient = client
+    activeTarget = target
+    activeCapture = capture
 
-    const flushTimer = opts.flushIntervalSec > 0
+    if (flushTimer) clearInterval(flushTimer)
+    flushTimer = opts.flushIntervalSec > 0
       ? setInterval(() => {
           saver.flush(capture.stores).catch(e => log.warn('periodic flush failed:', e))
         }, opts.flushIntervalSec * 1000)
       : null
 
-    // client -> server: pure forward
+    let sessionTorn = false
+    const tearDownSession = async (reason: string) => {
+      if (sessionTorn) return
+      sessionTorn = true
+      log.info(`session teardown: ${reason}`)
+      try { await saver.flush(capture.stores) } catch (e) { log.err('final flush failed:', e) }
+      try { client.end(reason) } catch {}
+      try { target.end(reason) } catch {}
+      if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
+      activeClient = activeTarget = null
+      activeCapture = null
+    }
+
     client.on('packet', (data: any, meta: any) => {
       if (target.state !== client.state) return
       try { target.write(meta.name, data) }
       catch (e) { log.dbg('c->s write failed', meta.name, (e as Error).message) }
     })
 
-    // server -> client: tap then forward
     target.on('packet', (data: any, meta: any) => {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
@@ -82,18 +107,34 @@ export function startProxy(opts: ProxyOpts) {
       catch (e) { log.dbg('s->c write failed', meta.name, (e as Error).message) }
     })
 
-    client.on('end',   () => teardown('client disconnect'))
-    target.on('end',   () => teardown('target disconnect'))
-    client.on('error', (e: any) => { log.err('client error:', e?.message); teardown('client error') })
-    target.on('error', (e: any) => { log.err('target error:', e?.message); teardown('target error') })
-
-    // Mirror disconnect packets so the user sees the real kick reason
+    client.on('end',   () => tearDownSession('client disconnect'))
+    target.on('end',   () => tearDownSession('target disconnect'))
+    client.on('error', (e: any) => { log.err('client error:', e?.message); tearDownSession('client error') })
+    target.on('error', (e: any) => { log.err('target error:', e?.message); tearDownSession('target error') })
     target.on('kick_disconnect',  (p: any) => log.warn('kicked (play):',  p?.reason))
     target.on('disconnect',       (p: any) => log.warn('disconnected:',   p?.reason))
   })
 
-  server.on('error', (e: any) => log.err('server error:', e?.message))
-  return server
+  server.on('error', (e: any) => {
+    log.err('server error:', e?.message)
+    emit({ type: 'session', state: 'error', detail: e?.message })
+  })
+
+  return {
+    opts,
+    isRunning: () => running,
+    chunksByDim: () => activeCapture?.chunksByDim() ?? {},
+    stop: async () => {
+      if (!running) return
+      running = false
+      emit({ type: 'session', state: 'stopping' })
+      try { activeClient?.end('proxy stopped') } catch {}
+      try { activeTarget?.end('proxy stopped') } catch {}
+      try { server.close() } catch {}
+      if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
+      emit({ type: 'session', state: 'stopped' })
+    },
+  }
 }
 
 function sanitize(s: string): string {
