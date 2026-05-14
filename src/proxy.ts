@@ -217,22 +217,28 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       // target's own play `login` packet now would be a second login mid-play
       // and the client disconnects with a protocol error. Rewrite it as a
       // respawn, which IS valid in play state and re-initialises the world.
+      //
+      // For 1.21.x both packets share the SpawnInfo container, exposed as the
+      // `worldState` field on each. We just hand it through and tack on
+      // copyMetadata=0 (drop attributes/effects on re-spawn).
       if (meta.state === 'play' && meta.name === 'login') {
         try {
           const respawnData = {
-            dimension:       data.dimension       ?? data.worldType ?? 0,
-            worldName:       data.worldName       ?? 'minecraft:overworld',
-            hashedSeed:      data.hashedSeed      ?? [0, 0],
-            gamemode:        data.gameMode        ?? 0,
-            previousGamemode: data.previousGameMode ?? -1,
-            isDebug:         data.isDebug         ?? false,
-            isFlat:          data.isFlat          ?? false,
-            copyMetadata:    0,
-            death:           undefined,
-            portalCooldown:  data.portalCooldown  ?? 0,
-            seaLevel:        data.seaLevel        ?? 64,
+            worldState: data.worldState ?? {
+              dimension: 0,
+              name: 'minecraft:overworld',
+              hashedSeed: [0, 0],
+              gamemode: 'survival',
+              previousGamemode: 255,
+              isDebug: false,
+              isFlat: false,
+              death: undefined,
+              portalCooldown: 0,
+              seaLevel: 64,
+            },
+            copyMetadata: 0,
           }
-          trace(`s->c REWRITE play.login -> respawn (dim=${respawnData.worldName})`)
+          trace(`s->c REWRITE play.login -> respawn (dim=${respawnData.worldState?.name})`)
           try { client.write('respawn', respawnData) }
           catch (e) { trace(`s->c REWRITE_FAIL respawn: ${(e as Error).message}`) }
           return
