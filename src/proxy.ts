@@ -81,14 +81,35 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     emit({ type: 'session', state: 'running', detail: `${opts.listenHost}:${opts.listenPort}` })
   })
 
-  // Wire diagnostics at the earliest possible point — login/config phase
-  // packets arrive BEFORE playerJoin fires, so we'd otherwise miss them.
+  // Wire diagnostics + protocol-completeness shims at the earliest possible
+  // point. Login/config phase packets arrive BEFORE playerJoin fires, so
+  // we'd otherwise miss them, and minecraft-protocol's server-side doesn't
+  // send feature_flags / select_known_packs which 1.21.x clients want
+  // during config phase.
   server.on('connection', (client: any) => {
     trace(`CONNECTION from=${client.socket?.remoteAddress}:${client.socket?.remotePort}`)
     client.on('packet', (_data: any, meta: any) => {
       trace(`SERVER<-CLIENT ${meta.state}.${meta.name}`)
     })
-    client.on('state', (n: string, o: string) => trace(`CLIENT_STATE ${o} -> ${n}`))
+    client.on('state', (newState: string, oldState: string) => {
+      trace(`CLIENT_STATE ${oldState} -> ${newState}`)
+      if (newState === 'configuration') {
+        // Inject the packets minecraft-protocol's server-side forgets.
+        // setImmediate puts them after mc.createServer's own registry_data
+        // writes, so the order is:
+        //   registry_data (many) -> feature_flags -> select_known_packs -> finish_configuration
+        setImmediate(() => {
+          try {
+            client.write('feature_flags', { features: ['minecraft:vanilla'] })
+            trace('SHIM_SENT feature_flags')
+          } catch (e) { trace(`SHIM_FAIL feature_flags: ${(e as Error).message}`) }
+          try {
+            client.write('select_known_packs', { packs: [] })
+            trace('SHIM_SENT select_known_packs')
+          } catch (e) { trace(`SHIM_FAIL select_known_packs: ${(e as Error).message}`) }
+        })
+      }
+    })
     client.on('end',   () => trace('CLIENT_END (pre-playerJoin)'))
     client.on('error', (e: any) => trace(`CLIENT_ERROR (pre-playerJoin): ${e?.message}`))
   })
