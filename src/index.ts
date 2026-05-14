@@ -36,7 +36,7 @@ function loadDefaults(): ProxyOpts {
     s ? path.resolve(s.replace(/%([^%]+)%/g, (_, n) => process.env[n] || '')) : ''
 
   return {
-    listenHost: process.env.LISTEN_HOST || '127.0.0.1',
+    listenHost: process.env.LISTEN_HOST || '0.0.0.0',
     listenPort: parseInt(process.env.LISTEN_PORT || '25566', 10),
     targetHost: process.env.TARGET_HOST || '',
     targetPort: parseInt(process.env.TARGET_PORT || '25565', 10),
