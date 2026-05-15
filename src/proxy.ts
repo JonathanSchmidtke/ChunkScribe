@@ -86,6 +86,10 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     // Replayed in order on playerJoin so MC sees the world target streamed.
     // Filtered: keep_alive / ping are time-sensitive — let live ones win.
     playBuffer: [] as Array<{ name: string; data: any }>,
+    // The last spoof-applied player_info packet for our own UUID. We re-send
+    // this every few seconds to MC so the cape/skin override beats Mojang's
+    // own session-server fetch instead of waiting on it.
+    selfPlayerInfo: null as any,
   }
 
   const REPLAY_SKIP = new Set(['keep_alive', 'ping'])
@@ -96,6 +100,7 @@ export function startProxy(opts: ProxyOpts): ProxySession {
 
   let activeServer: any = null
   let activeClient: any = null
+  let capeResendTimer: NodeJS.Timeout | null = null
   let flushTimer: NodeJS.Timeout | null = null
   let running = true
   let stopped = false
@@ -177,6 +182,10 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       try {
         if (injectCapeIntoPlayerInfo(data, selfUuid, capeUrl)) {
           trace(`cape spoof applied to player_info`)
+          // Remember the spoofed packet so we can re-broadcast it; MC's
+          // session-server fetch otherwise stalls texture application by
+          // 1-2 min on first connect.
+          captured.selfPlayerInfo = data
         }
       } catch (e) { trace(`cape spoof fail: ${(e as Error).message}`) }
     }
@@ -362,6 +371,21 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       // Drop the buffer; future packets flow live via target.on('packet')
       captured.playBuffer.length = 0
 
+      // Rebroadcast the spoofed player_info every 3s for the first 30s of
+      // session so MC stops waiting on Mojang's session-server response.
+      // After ~10 retries the texture is definitely loaded; stop spamming.
+      if (capeUrl && captured.selfPlayerInfo) {
+        let retries = 0
+        capeResendTimer = setInterval(() => {
+          if (!activeClient || retries++ >= 10) {
+            if (capeResendTimer) { clearInterval(capeResendTimer); capeResendTimer = null }
+            return
+          }
+          try { client.write('player_info', captured.selfPlayerInfo); trace(`cape resend #${retries}`) }
+          catch (e) { trace(`cape resend FAIL: ${(e as Error).message}`) }
+        }, 3000)
+      }
+
       // Bridge client -> target
       client.on('packet', (data: any, meta: any) => {
         try { capture.observeClientPacket(meta, data) } catch {}
@@ -387,6 +411,7 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     try { target?.end(reason) } catch {}
     try { activeServer?.close() } catch {}
     if (flushTimer) { clearInterval(flushTimer); flushTimer = null }
+    if (capeResendTimer) { clearInterval(capeResendTimer); capeResendTimer = null }
     emit({ type: 'session', state: 'stopped' })
   }
 
