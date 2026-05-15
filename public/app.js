@@ -37,7 +37,7 @@ function connectWs() {
     } else if (m.type === 'chunks') {
       for (const c of m.list) queueChunk(c.dim, c.x, c.z)
     } else if (m.type === 'dim') {
-      if (!state.chunksByDim[m.dim]) state.chunksByDim[m.dim] = new Set()
+      ensureDim(m.dim)
       state.activeDim = m.dim
       renderDimTabs()
       redraw()
@@ -215,20 +215,44 @@ function queueChunk(dim, x, z) {
   }
 }
 
+// Dim bucket: per-region (16×16 chunks) sets so redraw only iterates the
+// few regions intersecting the viewport instead of walking every chunk.
+//   state.chunksByDim[dim] = {
+//     set: Set<"x,z">,            // dedup
+//     regions: Map<"rx,rz", Array<[x,z]>>,   // viewport-cullable buckets
+//     count: number
+//   }
+const REGION = 16
+
+function ensureDim(dim) {
+  if (!state.chunksByDim[dim]) {
+    state.chunksByDim[dim] = { set: new Set(), regions: new Map(), count: 0 }
+    return true
+  }
+  return false
+}
+
+function addChunkToDim(dim, x, z) {
+  const d = state.chunksByDim[dim]
+  const key = `${x},${z}`
+  if (d.set.has(key)) return false
+  d.set.add(key)
+  d.count++
+  const rkey = `${Math.floor(x / REGION)},${Math.floor(z / REGION)}`
+  let bucket = d.regions.get(rkey)
+  if (!bucket) { bucket = []; d.regions.set(rkey, bucket) }
+  bucket.push([x, z])
+  return true
+}
+
 function drainChunkQueue() {
   rafPending = false
   let needTabRender = false
   const newChunks = []  // only the chunks added THIS frame for the active dim
   for (const [dim, x, z] of chunkQueue) {
-    if (!state.chunksByDim[dim]) {
-      state.chunksByDim[dim] = new Set()
-      needTabRender = true
-    }
-    const set = state.chunksByDim[dim]
-    const key = `${x},${z}`
-    if (set.has(key)) continue
-    set.add(key)
-    if (!state.activeDim || state.chunksByDim[state.activeDim]?.size === 0) {
+    if (ensureDim(dim)) needTabRender = true
+    if (!addChunkToDim(dim, x, z)) continue
+    if (!state.activeDim || state.chunksByDim[state.activeDim]?.count === 0) {
       state.activeDim = dim
       needTabRender = true
     }
@@ -237,10 +261,8 @@ function drainChunkQueue() {
   chunkQueue.length = 0
   if (needTabRender) {
     renderDimTabs()
-    redraw()  // tab/dim change forces a full repaint
+    redraw()
   } else if (newChunks.length) {
-    // Incremental paint: only the new squares this frame. Skips the
-    // walk-all-chunks redraw which gets slow once chunks count > a few thousand.
     paintChunks(newChunks)
   }
   updateStats()
@@ -275,17 +297,36 @@ function redraw() {
   ctx.fillStyle = '#0e1116'
   ctx.fillRect(0, 0, r.width, r.height)
   drawGrid(r)
-  const set = state.chunksByDim[state.activeDim]
-  if (!set) return updateStats()
-  ctx.fillStyle = '#6cb56a'
+  const d = state.chunksByDim[state.activeDim]
+  if (!d) return updateStats()
   const cx = r.width / 2, cy = r.height / 2
   const s = state.view.scale
-  for (const k of set) {
-    const [x, z] = k.split(',').map(Number)
-    const px = cx + (x - state.view.x) * s
-    const py = cy + (z - state.view.z) * s
-    if (px < -s || py < -s || px > r.width || py > r.height) continue
-    ctx.fillRect(Math.floor(px), Math.floor(py), Math.max(1, s - 0.5), Math.max(1, s - 0.5))
+  const side = Math.max(1, s - 0.5)
+
+  // Compute the world-chunk bounds currently in view, then derive the region
+  // (16×16 chunk bucket) range. Iterate only those buckets — typically <20
+  // even for huge captures, vs walking thousands of chunks every redraw.
+  const halfW = r.width / (2 * s), halfH = r.height / (2 * s)
+  const minX = Math.floor(state.view.x - halfW) - 1
+  const maxX = Math.ceil(state.view.x + halfW) + 1
+  const minZ = Math.floor(state.view.z - halfH) - 1
+  const maxZ = Math.ceil(state.view.z + halfH) + 1
+  const rMinX = Math.floor(minX / REGION), rMaxX = Math.floor(maxX / REGION)
+  const rMinZ = Math.floor(minZ / REGION), rMaxZ = Math.floor(maxZ / REGION)
+
+  ctx.fillStyle = '#6cb56a'
+  for (let rx = rMinX; rx <= rMaxX; rx++) {
+    for (let rz = rMinZ; rz <= rMaxZ; rz++) {
+      const bucket = d.regions.get(`${rx},${rz}`)
+      if (!bucket) continue
+      for (let i = 0; i < bucket.length; i++) {
+        const x = bucket[i][0], z = bucket[i][1]
+        const px = cx + (x - state.view.x) * s
+        const py = cy + (z - state.view.z) * s
+        if (px < -s || py < -s || px > r.width || py > r.height) continue
+        ctx.fillRect(Math.floor(px), Math.floor(py), side, side)
+      }
+    }
   }
   // Origin crosshair
   ctx.strokeStyle = '#2a313d'
@@ -342,16 +383,18 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') { recenter() }
 })
 function recenter() {
-  const set = state.chunksByDim[state.activeDim]
-  if (!set || set.size === 0) { state.view = { x: 0, z: 0, scale: state.view.scale }; redraw(); return }
-  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
-  for (const k of set) {
-    const [x, z] = k.split(',').map(Number)
-    if (x < minX) minX = x; if (x > maxX) maxX = x
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z
+  const d = state.chunksByDim[state.activeDim]
+  if (!d || d.count === 0) { state.view = { x: 0, z: 0, scale: state.view.scale }; redraw(); return }
+  // Average over region centers — way cheaper than walking every chunk.
+  let sumX = 0, sumZ = 0, n = 0
+  for (const rkey of d.regions.keys()) {
+    const [rx, rz] = rkey.split(',').map(Number)
+    sumX += rx * REGION + REGION / 2
+    sumZ += rz * REGION + REGION / 2
+    n++
   }
-  state.view.x = (minX + maxX) / 2
-  state.view.z = (minZ + maxZ) / 2
+  state.view.x = sumX / n
+  state.view.z = sumZ / n
   redraw()
 }
 
@@ -368,8 +411,8 @@ function renderDimTabs() {
 }
 
 function updateStats() {
-  const set = state.chunksByDim[state.activeDim]
-  $('chunk-count').textContent = set ? set.size : 0
+  const d = state.chunksByDim[state.activeDim]
+  $('chunk-count').textContent = d ? d.count : 0
   $('active-dim').textContent = (state.activeDim || '').replace('minecraft:', '') || '—'
 }
 
