@@ -220,6 +220,12 @@ async function patchLevelDatName(dir: string, name: string) {
   const data = tag.value?.Data?.value
   if (!data) return
   data.LevelName = { type: 'string', value: name }
+  // The proxy writes WorldGenSettings with an EMPTY dimensions compound. MC
+  // 1.21.x refuses to load with "IllegalStateException: Overworld settings
+  // missing" because vanilla expects at least the three default dims defined.
+  // Strip it entirely so vanilla MC fills it with the standard preset on
+  // first load. (Void-mode patch overwrites with its own preset and is unaffected.)
+  if (data.WorldGenSettings) delete data.WorldGenSettings
   await writeLevelDat(dir, tag)
 }
 
@@ -278,6 +284,24 @@ async function remapCustomDimensions(root: string): Promise<string[]> {
   catch { return [] }
 
   const remapped: string[] = []
+  // Collect every (ns, dim) pair with its file count first so we can sort.
+  // The remap is FIRST-WRITE-WINS so the dim we process first claims each
+  // region file. If 'gridlock:limbo' (mostly empty) processes before
+  // 'gridlock:overworld' (the real map), limbo's void chunks squat in the
+  // region slots and the real chunks get rejected. Solution: process the
+  // biggest dim per target FIRST. Bonus: outright skip dims whose name
+  // strongly suggests they're a lobby/limbo (rarely worth keeping anyway).
+  const SKIP_NAMES = /\b(limbo|lobby|hub|spawn_area|waiting|queue|game_lobby)\b/i
+
+  type DimPlan = {
+    ns: string
+    name: string
+    dimRoot: string
+    sources: string[]
+    target: string
+    fileCount: number
+  }
+  const plans: DimPlan[] = []
 
   for (const ns of nsEntries) {
     if (!ns.isDirectory()) continue
@@ -288,37 +312,58 @@ async function remapCustomDimensions(root: string): Promise<string[]> {
 
     for (const dim of dimEntries) {
       if (!dim.isDirectory()) continue
+      const tag = `${ns.name}/${dim.name}`.toLowerCase()
+      if (SKIP_NAMES.test(tag)) {
+        log.info(`remap: skipping lobby-like dim "${ns.name}:${dim.name}"`)
+        // still tidy up so it doesn't ship as a ghost dim folder
+        try { await fsp.rm(path.join(nsPath, dim.name), { recursive: true, force: true }) } catch {}
+        continue
+      }
       const dimRoot = path.join(nsPath, dim.name)
-      // Collect .mca files from both canonical (dim/region/) and legacy (dim/).
       const sources: string[] = []
       try { if ((await fsp.stat(path.join(dimRoot, 'region'))).isDirectory()) sources.push(path.join(dimRoot, 'region')) } catch {}
       sources.push(dimRoot)
 
-      const tag = `${ns.name}/${dim.name}`.toLowerCase()
       let target: string
       if (tag.includes('nether'))         target = path.join(root, 'DIM-1', 'region')
       else if (tag.includes('end'))       target = path.join(root, 'DIM1',  'region')
       else                                target = path.join(root, 'region')
 
-      await fsp.mkdir(target, { recursive: true })
-      let moved = 0
+      // Count .mca files this dim contributes for sort priority.
+      let fileCount = 0
       for (const src of sources) {
-        let files: string[] = []
-        try { files = (await fsp.readdir(src)).filter(f => f.endsWith('.mca')) } catch {}
-        for (const f of files) {
-          const srcFile = path.join(src, f)
-          const dst = path.join(target, f)
-          try { await fsp.access(dst); continue } catch {}
-          try { await fsp.rename(srcFile, dst); moved++ }
-          catch {
-            try { await fsp.copyFile(srcFile, dst); await fsp.unlink(srcFile); moved++ } catch {}
-          }
+        try { fileCount += (await fsp.readdir(src)).filter(f => f.endsWith('.mca')).length } catch {}
+      }
+      plans.push({ ns: ns.name, name: dim.name, dimRoot, sources, target, fileCount })
+    }
+  }
+
+  // Biggest dim first → real map wins region slots.
+  plans.sort((a, b) => b.fileCount - a.fileCount)
+
+  for (const p of plans) {
+    await fsp.mkdir(p.target, { recursive: true })
+    let moved = 0
+    for (const src of p.sources) {
+      let files: string[] = []
+      try { files = (await fsp.readdir(src)).filter(f => f.endsWith('.mca')) } catch {}
+      for (const f of files) {
+        const srcFile = path.join(src, f)
+        const dst = path.join(p.target, f)
+        try { await fsp.access(dst); continue } catch {}
+        try { await fsp.rename(srcFile, dst); moved++ }
+        catch {
+          try { await fsp.copyFile(srcFile, dst); await fsp.unlink(srcFile); moved++ } catch {}
         }
       }
-      try { await fsp.rm(dimRoot, { recursive: true, force: true }) } catch {}
-      remapped.push(`${ns.name}:${dim.name} -> ${path.relative(root, target)} (${moved} files)`)
     }
-    // remove namespace folder if empty
+    try { await fsp.rm(p.dimRoot, { recursive: true, force: true }) } catch {}
+    remapped.push(`${p.ns}:${p.name} (${p.fileCount}f) -> ${path.relative(root, p.target)} (${moved} moved)`)
+  }
+
+  // Tidy: remove now-empty namespace folders + dimensions/ wrapper.
+  for (const ns of nsEntries) {
+    const nsPath = path.join(dimsDir, ns.name)
     try {
       const left = await fsp.readdir(nsPath)
       if (left.length === 0) await fsp.rmdir(nsPath)

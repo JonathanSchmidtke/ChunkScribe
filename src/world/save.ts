@@ -171,12 +171,25 @@ export class WorldSaver {
             BorderWarningBlocks:  { type: 'double', value: ws?.borderWarnBlocks ?? 5 },
             BorderWarningTime:    { type: 'double', value: ws?.borderWarnTime ?? 15 },
             GameRules: { type: 'compound', value: {} },
+            // Write a full vanilla 3-dim worldgen preset so MC accepts the
+            // level.dat on load. Omitting WorldGenSettings triggers
+            // "Overworld settings missing" — MC's codec is strict. The
+            // void-mode Transform overrides this with a void-flat preset
+            // when the user wants unscanned chunks to stay empty.
             WorldGenSettings: {
               type: 'compound',
               value: {
-                seed: { type: 'long', value: bigintToLongPair(this.phase.hashedSeed) },
-                generate_features: { type: 'byte', value: 0 },
-                dimensions: { type: 'compound', value: {} },
+                seed:              { type: 'long', value: bigintToLongPair(this.phase.hashedSeed) },
+                generate_features: { type: 'byte', value: 1 },
+                bonus_chest:       { type: 'byte', value: 0 },
+                dimensions: {
+                  type: 'compound',
+                  value: {
+                    'minecraft:overworld':  vanillaDimension('minecraft:overworld'),
+                    'minecraft:the_nether': vanillaDimension('minecraft:the_nether'),
+                    'minecraft:the_end':    vanillaDimension('minecraft:the_end'),
+                  },
+                },
               },
             },
           },
