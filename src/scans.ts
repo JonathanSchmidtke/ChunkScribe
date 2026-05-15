@@ -58,10 +58,25 @@ async function inspectScan(root: string, name: string): Promise<ScanInfo | null>
   }
 
   const [hasOverworld, hasNether, hasEnd] = await Promise.all([has(overworld), has(nether), has(end)])
-  if (!hasOverworld && !hasNether && !hasEnd) return null
+  const vanillaCounts = await Promise.all([countMca(overworld), countMca(nether), countMca(end)])
 
-  const counts = await Promise.all([countMca(overworld), countMca(nether), countMca(end)])
-  const regionFileCount = counts.reduce((a, b) => a + b, 0)
+  // Also look for datapack-dim region files (dimensions/<ns>/<name>/region/*.mca).
+  // A server with only custom dims (gridlock:limbo etc.) would otherwise look empty.
+  let customCount = 0
+  try {
+    const dimsDir = path.join(root, 'dimensions')
+    const namespaces = await fsp.readdir(dimsDir, { withFileTypes: true })
+    for (const ns of namespaces) {
+      if (!ns.isDirectory()) continue
+      const dims = await fsp.readdir(path.join(dimsDir, ns.name), { withFileTypes: true })
+      for (const dim of dims) {
+        if (!dim.isDirectory()) continue
+        customCount += await countMca(path.join(dimsDir, ns.name, dim.name, 'region'))
+      }
+    }
+  } catch {}
+
+  const regionFileCount = vanillaCounts.reduce((a, b) => a + b, 0) + customCount
   if (regionFileCount === 0) return null
 
   let lastModified = 0
