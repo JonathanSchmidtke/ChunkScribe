@@ -62,7 +62,6 @@ function populateForm(d) {
   $('cape').value            = d.cape ?? ''
   $('listenPort').value      = d.listenPort ?? 25566
   $('version').value         = d.version ?? '1.21.11'
-  $('outputDir').value       = d.outputDir ?? ''
   $('flushIntervalSec').value = d.flushIntervalSec ?? 30
   $('version-tag').textContent = d.version ?? '1.21.11'
   $('hint-port').textContent = d.listenPort ?? 25566
@@ -76,7 +75,6 @@ function readForm() {
     cape:       $('cape').value.trim(),
     listenPort: parseInt($('listenPort').value, 10) || 25566,
     version:    $('version').value.trim() || '1.21.11',
-    outputDir:  $('outputDir').value.trim(),
     flushIntervalSec: parseInt($('flushIntervalSec').value, 10) || 0,
   }
 }

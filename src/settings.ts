@@ -31,7 +31,8 @@ export function saveOpts(opts: ProxyOpts) {
       msEmail:    opts.msEmail,
       listenPort: opts.listenPort,
       version:    opts.version,
-      outputDir:  opts.outputDir,
+      // outputDir intentionally not persisted — always auto-resolved to
+      // Documents/ChunkScribe/scans (or OUTPUT_DIR env override).
       flushIntervalSec: opts.flushIntervalSec,
       cape:       opts.cape,
     }

@@ -54,7 +54,11 @@ function loadDefaults(): ProxyOpts {
     targetPort: parseInt(process.env.TARGET_PORT || '', 10) || saved.targetPort || 25565,
     msEmail:    process.env.MS_EMAIL    || saved.msEmail    || undefined,
     version:    process.env.MC_VERSION  || saved.version    || '1.21.11',
-    outputDir:  expand(process.env.OUTPUT_DIR) || saved.outputDir || defaultDownloadsDir(),
+    // No saved fallback for outputDir — saves always land in
+    // Documents/ChunkScribe/scans/ (auto-created) unless an explicit
+    // OUTPUT_DIR env override is set. The GUI used to expose this as a
+    // form field; removed since auto-folder makes it redundant.
+    outputDir:  expand(process.env.OUTPUT_DIR) || defaultDownloadsDir(),
     flushIntervalSec:
       parseInt(process.env.FLUSH_INTERVAL_SEC || '', 10) ||
       saved.flushIntervalSec ||
