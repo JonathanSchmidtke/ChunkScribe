@@ -58,6 +58,21 @@ export class Capture {
     return out
   }
 
+  /** Coord lists for replay to a fresh GUI client (so the chunk map can
+   *  rebuild itself after a page reload). */
+  chunkCoordsByDim(): Record<string, [number, number][]> {
+    const out: Record<string, [number, number][]> = {}
+    for (const [dim, store] of this.stores) {
+      const list: [number, number][] = []
+      for (const key of store.keys()) {
+        const [x, z] = key.split(',').map(Number)
+        list.push([x, z])
+      }
+      out[dim] = list
+    }
+    return out
+  }
+
   handle(meta: any, data: any) {
     const name: string = meta.name
     const state: string = meta.state

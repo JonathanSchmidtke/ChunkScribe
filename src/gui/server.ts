@@ -64,7 +64,14 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
 
   wss.on('connection', (ws) => {
     clients.add(ws)
-    ws.send(JSON.stringify({ type: 'hello', defaults: lastDefaults, status: buildStatus(session, lastDefaults) }))
+    // Hydrate the freshly-loaded page with everything we already have so
+    // the chunk map shows captures from before this WS connection opened.
+    ws.send(JSON.stringify({
+      type: 'hello',
+      defaults: lastDefaults,
+      status: buildStatus(session, lastDefaults),
+      chunkCoordsByDim: session?.chunkCoordsByDim() ?? {},
+    }))
     ws.on('close', () => clients.delete(ws))
   })
 

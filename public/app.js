@@ -23,6 +23,13 @@ function connectWs() {
       state.defaults = m.defaults
       populateForm(m.defaults)
       applyStatus(m.status)
+      // Rehydrate the chunk map from the server's existing capture so
+      // refreshing the page doesn't blank out the green squares.
+      if (m.chunkCoordsByDim) {
+        for (const dim of Object.keys(m.chunkCoordsByDim)) {
+          for (const [x, z] of m.chunkCoordsByDim[dim]) queueChunk(dim, x, z)
+        }
+      }
     } else if (m.type === 'log') {
       log(m.level, m.msg, m.ts)
     } else if (m.type === 'chunk') {

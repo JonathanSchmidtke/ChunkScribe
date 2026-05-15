@@ -22,4 +22,8 @@ export class WorldStore {
   size(): number {
     return this.columns.size
   }
+
+  keys(): IterableIterator<string> {
+    return this.columns.keys()
+  }
 }

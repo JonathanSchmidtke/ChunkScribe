@@ -38,6 +38,7 @@ export interface ProxySession {
   stop: () => Promise<void>
   isRunning: () => boolean
   chunksByDim: () => Record<string, number>
+  chunkCoordsByDim: () => Record<string, [number, number][]>
   extraStats: () => { entities: number; containers: number }
   sendChat: (text: string) => boolean
 }
@@ -393,6 +394,7 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     opts,
     isRunning: () => running,
     chunksByDim: () => capture.chunksByDim(),
+    chunkCoordsByDim: () => capture.chunkCoordsByDim(),
     extraStats: () => ({
       entities:   capture.mobs.count(),
       containers: capture.containers.totalCaptured,
