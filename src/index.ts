@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { log } from './util/log'
 import { startGui } from './gui/server'
+import { loadSavedOpts } from './settings'
 import type { ProxyOpts } from './proxy'
 
 /**
@@ -35,15 +36,24 @@ function loadDefaults(): ProxyOpts {
   const expand = (s: string | undefined) =>
     s ? path.resolve(s.replace(/%([^%]+)%/g, (_, n) => process.env[n] || '')) : ''
 
+  // Resolution order, highest priority first:
+  //   1. .env / process.env (explicit user override)
+  //   2. chunkscribe.config.json (last-used values saved on Start)
+  //   3. Hardcoded defaults
+  const saved = loadSavedOpts()
+
   return {
     listenHost: process.env.LISTEN_HOST || '0.0.0.0',
-    listenPort: parseInt(process.env.LISTEN_PORT || '25566', 10),
-    targetHost: process.env.TARGET_HOST || '',
-    targetPort: parseInt(process.env.TARGET_PORT || '25565', 10),
-    msEmail:    process.env.MS_EMAIL || undefined,
-    version:    process.env.MC_VERSION || '1.21.11',
-    outputDir:  expand(process.env.OUTPUT_DIR) || defaultDownloadsDir(),
-    flushIntervalSec: parseInt(process.env.FLUSH_INTERVAL_SEC || '30', 10),
+    listenPort: parseInt(process.env.LISTEN_PORT || '', 10) || saved.listenPort || 25566,
+    targetHost: process.env.TARGET_HOST || saved.targetHost || '',
+    targetPort: parseInt(process.env.TARGET_PORT || '', 10) || saved.targetPort || 25565,
+    msEmail:    process.env.MS_EMAIL    || saved.msEmail    || undefined,
+    version:    process.env.MC_VERSION  || saved.version    || '1.21.11',
+    outputDir:  expand(process.env.OUTPUT_DIR) || saved.outputDir || defaultDownloadsDir(),
+    flushIntervalSec:
+      parseInt(process.env.FLUSH_INTERVAL_SEC || '', 10) ||
+      saved.flushIntervalSec ||
+      30,
   }
 }
 

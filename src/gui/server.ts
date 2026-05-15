@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { log } from '../util/log'
 import { bus, GuiEvent } from './bus'
 import { startProxy, ProxySession, ProxyOpts } from '../proxy'
+import { saveOpts } from '../settings'
 
 export interface GuiServerOpts {
   port: number
@@ -28,6 +29,8 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
         lastDefaults = merged
         try {
           session = startProxy(merged)
+          // Persist last-used values so the form is pre-filled next launch.
+          saveOpts(merged)
           return { ok: true }
         } catch (e) {
           return { ok: false, error: (e as Error).message }

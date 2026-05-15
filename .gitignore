@@ -5,6 +5,7 @@ dist/
 worlds/
 *.log
 packets.log
+chunkscribe.config.json
 .DS_Store
 Thumbs.db
 .vscode/
