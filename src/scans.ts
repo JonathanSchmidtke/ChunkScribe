@@ -125,6 +125,14 @@ export async function transformToWorld(opts: TransformOpts): Promise<TransformRe
     } catch {}
     await fsp.cp(opts.scanPath, destPath, { recursive: true })
     log.info(`transformed ${opts.scanPath} -> ${destPath}`)
+    // Datapack dims (gridlock:nether, hub:plots, etc.) live in
+    // dimensions/<ns>/<name>/region in the scan. Vanilla MC can't load
+    // them without the datapack, so remap to the vanilla nearest equivalent
+    // (DIM-1 / DIM1 / root) based on the name. Skip / dump on failure.
+    const remapped = await remapCustomDimensions(destPath)
+    if (remapped.length) {
+      log.info(`remapped custom dims to vanilla: ${remapped.join(', ')}`)
+    }
   } catch (e) {
     return { ok: false, error: `copy failed: ${(e as Error).message}` }
   }
@@ -230,6 +238,73 @@ async function patchLevelDatForVoid(dir: string, name: string) {
   }
 
   await writeLevelDat(dir, tag)
+}
+
+/**
+ * Walk dimensions/<ns>/<name>/ under the destination and move each datapack
+ * dim's region files into the vanilla folder (DIM-1 / DIM1 / root) that
+ * matches its name. Without this, datapack dims appear as black holes when
+ * the user opens the world without the server's datapack.
+ *
+ * Heuristic: name (case-insensitive, ns part included) containing "nether"
+ * → DIM-1, "end" → DIM1, "overworld"/anything else → root.
+ * Where two dims map to the same target we merge: chunks one dim has but
+ * the other doesn't are kept; collisions favour the file that's already
+ * there (first-write-wins). Empty parent folders are cleaned up.
+ */
+async function remapCustomDimensions(root: string): Promise<string[]> {
+  const dimsDir = path.join(root, 'dimensions')
+  let nsEntries: fs.Dirent[]
+  try { nsEntries = await fsp.readdir(dimsDir, { withFileTypes: true }) }
+  catch { return [] }
+
+  const remapped: string[] = []
+
+  for (const ns of nsEntries) {
+    if (!ns.isDirectory()) continue
+    const nsPath = path.join(dimsDir, ns.name)
+    let dimEntries: fs.Dirent[]
+    try { dimEntries = await fsp.readdir(nsPath, { withFileTypes: true }) }
+    catch { continue }
+
+    for (const dim of dimEntries) {
+      if (!dim.isDirectory()) continue
+      const srcRegion = path.join(nsPath, dim.name, 'region')
+      try { if (!(await fsp.stat(srcRegion)).isDirectory()) continue } catch { continue }
+
+      const tag = `${ns.name}/${dim.name}`.toLowerCase()
+      let target: string
+      if (tag.includes('nether'))         target = path.join(root, 'DIM-1', 'region')
+      else if (tag.includes('end'))       target = path.join(root, 'DIM1',  'region')
+      else                                target = path.join(root, 'region')
+
+      await fsp.mkdir(target, { recursive: true })
+      const files = await fsp.readdir(srcRegion)
+      for (const f of files) {
+        const src = path.join(srcRegion, f)
+        const dst = path.join(target, f)
+        try { await fsp.access(dst); continue } catch {}     // collision: keep existing
+        try { await fsp.rename(src, dst) }
+        catch {
+          // rename can fail across drives — fall back to copy+unlink
+          try { await fsp.copyFile(src, dst); await fsp.unlink(src) } catch {}
+        }
+      }
+      // tidy
+      try { await fsp.rm(path.join(nsPath, dim.name), { recursive: true, force: true }) } catch {}
+      remapped.push(`${ns.name}:${dim.name} -> ${path.relative(root, target)}`)
+    }
+    // remove namespace folder if empty
+    try {
+      const left = await fsp.readdir(nsPath)
+      if (left.length === 0) await fsp.rmdir(nsPath)
+    } catch {}
+  }
+  try {
+    const left = await fsp.readdir(dimsDir)
+    if (left.length === 0) await fsp.rmdir(dimsDir)
+  } catch {}
+  return remapped
 }
 
 function voidDimension(typeId: string): any {
