@@ -64,9 +64,13 @@ export function injectCapeIntoPlayerInfo(data: any, selfUuid: string, capeUrl: s
         const decoded = JSON.parse(Buffer.from(prop.value, 'base64').toString('utf8'))
         if (!decoded.textures) decoded.textures = {}
         decoded.textures.CAPE = { url: capeUrl }
+        // Mojang sets signatureRequired=true on real textures; if we leave it
+        // true and drop the (now-invalid) signature, the client tosses the
+        // whole property and we lose skin AND cape. Either flag has to go.
+        if ('signatureRequired' in decoded) delete decoded.signatureRequired
         prop.value = Buffer.from(JSON.stringify(decoded)).toString('base64')
-        // signature was computed by Mojang for the *original* textures string;
-        // changing the textures invalidates it, so drop it.
+        // signature was computed for the original textures bytes; mutating
+        // them invalidates it. Drop so the client doesn't try to verify.
         if ('signature' in prop) prop.signature = undefined
         modified = true
       } catch {
