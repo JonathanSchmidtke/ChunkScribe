@@ -76,7 +76,13 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     featureFlags: null as any,
     playLogin: null as any,
     targetInPlay: false,
+    // All play-state packets that arrived from target before MC connected.
+    // Replayed in order on playerJoin so MC sees the world target streamed.
+    // Filtered: keep_alive / ping are time-sensitive — let live ones win.
+    playBuffer: [] as Array<{ name: string; data: any }>,
   }
+
+  const REPLAY_SKIP = new Set(['keep_alive', 'ping'])
 
   const phase = new PhaseTracker()
   const saver = new WorldSaver(worldDir, opts.version, phase)
@@ -139,18 +145,24 @@ export function startProxy(opts: ProxyOpts): ProxySession {
 
     // Once MC client is connected & in play, bridge target's play stream through.
     if (activeClient && activeClient.state === 'play' && meta.state === 'play') {
-      // Don't double-send login (we replay captured.playLogin on connect)
       if (meta.name === 'login') {
         trace(`s->c DROP duplicate play.login`)
         return
       }
-      // keep_alive must pass through or client times out
       try {
         activeClient.write(meta.name, data)
         trace(`s->c FWD ${meta.state}.${meta.name}`)
       } catch (e) {
         trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`)
       }
+      return
+    }
+
+    // MC not connected yet but target already in play: buffer the packet for
+    // replay so MC gets the full world snapshot when it joins.
+    if (meta.state === 'play' && meta.name !== 'login' && !REPLAY_SKIP.has(meta.name)) {
+      captured.playBuffer.push({ name: meta.name, data })
+      trace(`s->c BUFFER ${meta.name} (buf size ${captured.playBuffer.length})`)
       return
     }
 
@@ -241,6 +253,21 @@ export function startProxy(opts: ProxyOpts): ProxySession {
           trace(`SHIM play.login FAIL: ${(e as Error).message}`)
         }
       }
+
+      // Replay the world snapshot target streamed during warmup: chunks,
+      // spawn_position, player position, declare_recipes, set_health,
+      // everything in order. Without this, MC sits in "Loading terrain"
+      // forever because target has already finished sending the initial
+      // world view and won't re-send.
+      log.info(`replaying ${captured.playBuffer.length} buffered play packets to MC...`)
+      let replayed = 0, replayFailed = 0
+      for (const pkt of captured.playBuffer) {
+        try { client.write(pkt.name, pkt.data); replayed++ }
+        catch (e) { replayFailed++; trace(`replay FAIL ${pkt.name}: ${(e as Error).message}`) }
+      }
+      log.info(`replay done (${replayed} ok, ${replayFailed} failed)`)
+      // Drop the buffer; future packets flow live via target.on('packet')
+      captured.playBuffer.length = 0
 
       // Bridge client -> target
       client.on('packet', (data: any, meta: any) => {
