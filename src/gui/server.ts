@@ -6,6 +6,7 @@ import { log } from '../util/log'
 import { bus, GuiEvent } from './bus'
 import { startProxy, ProxySession, ProxyOpts } from '../proxy'
 import { saveOpts } from '../settings'
+import { listScans, transformToWorld, defaultSavesDir } from '../scans'
 
 export interface GuiServerOpts {
   port: number
@@ -47,6 +48,14 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
         const ok = session.sendChat(text)
         return ok ? { ok: true } : { ok: false, error: 'chat send failed (target not in play state?)' }
       },
+      listScans: () => listScans(lastDefaults.outputDir),
+      transform: (body: any) => transformToWorld({
+        scanPath: body?.scanPath,
+        destName: body?.destName || 'ChunkScribe World',
+        savesDir: body?.savesDir || undefined,
+        voidUnscanned: !!body?.voidUnscanned,
+      }),
+      defaultSavesDir: () => defaultSavesDir(),
     })
   })
 
@@ -139,6 +148,9 @@ type Handlers = {
   start: (body: any) => { ok: boolean; error?: string }
   stop: () => Promise<{ ok: boolean; error?: string }>
   chat: (text: string) => { ok: boolean; error?: string }
+  listScans: () => Promise<any[]>
+  transform: (body: any) => Promise<{ ok: boolean; destPath?: string; error?: string }>
+  defaultSavesDir: () => string
 }
 
 const MIME: Record<string, string> = {
@@ -200,6 +212,12 @@ function handleApi(req: http.IncomingMessage, res: http.ServerResponse, h: Handl
       if (!text) return json(400, { ok: false, error: 'empty text' })
       return json(200, h.chat(text))
     })
+  }
+  if (req.method === 'GET' && url === '/api/scans') {
+    return h.listScans().then(scans => json(200, { scans, savesDir: h.defaultSavesDir() }))
+  }
+  if (req.method === 'POST' && url === '/api/transform') {
+    return readBody().then(body => h.transform(body)).then(r => json(200, r))
   }
 
   json(404, { ok: false, error: 'not found' })

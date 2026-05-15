@@ -56,6 +56,23 @@
       <p class="hint">
         After starting, connect Minecraft to <code>127.0.0.1:<span id="hint-port">25566</span></code>.
       </p>
+
+      <h2>Transform to playable world</h2>
+      <label>Scan
+        <select id="scan-select"></select>
+      </label>
+      <label>Name in Minecraft saves
+        <input type="text" id="transform-name" placeholder="ChunkScribe World" />
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" id="transform-void" />
+        Void around scanned (don't generate missing chunks)
+      </label>
+      <div class="actions">
+        <button id="btn-transform" class="primary">Transform</button>
+        <button id="btn-refresh-scans">↻</button>
+      </div>
+      <p class="hint" id="saves-hint">Saves to <code id="saves-dir">…</code></p>
     </aside>
 
     <section class="panel map-panel">

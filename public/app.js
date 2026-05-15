@@ -86,6 +86,64 @@ $('btn-stop').onclick = async () => {
   await fetch('/api/stop', { method: 'POST' }).catch(() => {})
 }
 
+// ---------- Scans / Transform ----------
+async function refreshScans() {
+  const r = await fetch('/api/scans').then(r => r.json()).catch(() => ({ scans: [], savesDir: '' }))
+  const select = $('scan-select')
+  select.innerHTML = ''
+  if (!r.scans || r.scans.length === 0) {
+    const opt = document.createElement('option')
+    opt.textContent = '(no scans yet — Start the proxy + connect to capture one)'
+    opt.disabled = true
+    select.appendChild(opt)
+  } else {
+    for (const s of r.scans) {
+      const opt = document.createElement('option')
+      opt.value = s.path
+      const dims = [s.hasOverworld && 'overworld', s.hasNether && 'nether', s.hasEnd && 'end'].filter(Boolean).join('+')
+      const when = new Date(s.lastModified).toLocaleString()
+      opt.textContent = `${s.name} — ${s.regionFileCount} region files, ${dims} (${when})`
+      opt.dataset.name = s.name
+      select.appendChild(opt)
+    }
+  }
+  if (r.savesDir) $('saves-dir').textContent = r.savesDir
+}
+
+$('scan-select').onchange = () => {
+  const opt = $('scan-select').selectedOptions[0]
+  if (opt && opt.dataset.name && !$('transform-name').value.trim()) {
+    $('transform-name').value = opt.dataset.name
+  }
+}
+
+$('btn-refresh-scans').onclick = refreshScans
+
+$('btn-transform').onclick = async () => {
+  const scanPath = $('scan-select').value
+  if (!scanPath) { alert('No scan selected.'); return }
+  const destName = $('transform-name').value.trim() || 'ChunkScribe World'
+  const voidUnscanned = $('transform-void').checked
+  $('btn-transform').disabled = true
+  log('info', `transforming ${scanPath} -> Minecraft saves ("${destName}", void=${voidUnscanned})…`)
+  const r = await fetch('/api/transform', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scanPath, destName, voidUnscanned }),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }))
+  $('btn-transform').disabled = false
+  if (r.ok) {
+    log('info', `transform complete → ${r.destPath}`)
+    alert(`Done!\nOpen Minecraft → Singleplayer → "${destName}".\n\nPath:\n${r.destPath}`)
+  } else {
+    log('err', `transform failed: ${r.error}`)
+    alert('Transform failed: ' + (r.error || 'unknown'))
+  }
+}
+
+refreshScans()
+setInterval(refreshScans, 10_000)  // periodic refresh so the dropdown stays current
+
 $('chat-form').onsubmit = async (e) => {
   e.preventDefault()
   const input = $('chat-input')

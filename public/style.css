@@ -170,6 +170,34 @@ kbd {
   background: var(--panel-2);
 }
 
+label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+label.checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+}
+
+#btn-refresh-scans {
+  flex: 0 0 auto;
+  padding: 9px 14px;
+}
+
 .log {
   font: 11px/1.5 ui-monospace, Consolas, "Cascadia Mono", monospace;
   white-space: pre-wrap;

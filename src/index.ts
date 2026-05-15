@@ -29,7 +29,12 @@ function openBrowser(url: string) {
 }
 
 function defaultDownloadsDir(): string {
-  return path.join(os.homedir(), 'Downloads')
+  // Each scan lands in Documents/ChunkScribe/scans/<server>/ so they're
+  // organised and easy to find (no more lost-in-Downloads). Auto-create
+  // the parent so the first run "just works".
+  const dir = path.join(os.homedir(), 'Documents', 'ChunkScribe', 'scans')
+  try { require('node:fs').mkdirSync(dir, { recursive: true }) } catch {}
+  return dir
 }
 
 function loadDefaults(): ProxyOpts {
