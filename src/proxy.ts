@@ -242,30 +242,54 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       catch (e) { trace(`c->s WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
 
-    // Capture-only mode: target's registries (biome IDs, dimension type IDs,
-    // enchantment IDs etc.) differ from the bundled-minecraft-data registries
-    // we sent the client during config phase. ANY play packet referencing a
-    // target-specific ID (chunks, block updates, entities) makes the client's
-    // local registry lookup fail and disconnect.
+    // Selective forward: chunks + world rendering get sent to the client so it
+    // exits "Loading terrain" and the player can move; everything that depends
+    // on server-specific registries (inventories, entities-with-custom-types,
+    // damage events) stays capture-only to avoid NPEs from id-lookup failures.
     //
-    // Since the goal of ChunkScribe is to *download* the world, not to play
-    // it through the proxy, we route target's full play stream into the
-    // capture pipeline and don't forward to the client at all. The client
-    // stays alive in its bundled world (looking at nothing useful) but its
-    // session keeps us authenticated, and chunks get saved to disk via
-    // capture+saver. The user can move around the real server with /tp
-    // commands (forwarded c->s normally) and watch the GUI chunk map fill.
+    // Forwarded (lets the user actually pilot the player around the world):
+    //   - map_chunk / chunk_batch_*       (terrain)
+    //   - block_update / multi_block_*    (block changes)
+    //   - position                        (player teleport)
+    //   - spawn_position, update_view_position, update_view_distance
+    //   - keep_alive                      (required or kicked)
+    //   - update_time                     (cosmetic but harmless)
+    //
+    // Captured but NOT forwarded (would crash client on registry mismatch):
+    //   - login, respawn                  (already replaced by our synthetic)
+    //   - window_items, set_slot          (inventory state set up by login)
+    //   - entity_metadata, spawn_entity   (entity-type id mismatches)
+    //   - declare_recipes, recipe_book_*  (recipe id mismatches)
+    //   - difficulty, abilities, etc.     (cosmetic / harmless to drop)
+    const FORWARD_TO_CLIENT = new Set([
+      'keep_alive',
+      'map_chunk', 'level_chunk_with_light',
+      'chunk_batch_start', 'chunk_batch_finished',
+      'unload_chunk',
+      'update_view_position', 'update_view_distance',
+      'spawn_position',
+      'position',
+      'block_update', 'block_change',
+      'multi_block_change', 'section_blocks_update', 'update_section_blocks',
+      'update_time',
+      'game_state_change',
+    ])
+
     target.on('packet', (data: any, meta: any) => {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
       catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
 
-      // Keep-alive must pass through or the client kicks itself.
-      if (meta.name === 'keep_alive') {
-        try { client.write('keep_alive', data) } catch {}
+      if (meta.state !== 'play' || !FORWARD_TO_CLIENT.has(meta.name)) {
+        trace(`s->c CAPTURE ${meta.state}.${meta.name}`)
         return
       }
-      trace(`s->c CAPTURE ${meta.state}.${meta.name}`)
+      try {
+        client.write(meta.name, data)
+        trace(`s->c FWD ${meta.state}.${meta.name}`)
+      } catch (e) {
+        trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`)
+      }
     })
 
     target.on('state', (newState: string, oldState: string) => {

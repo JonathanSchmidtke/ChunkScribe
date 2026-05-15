@@ -1,6 +1,6 @@
 {
   "name": "chunkscribe",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": false,
   "description": "Minecraft 1.21.11 MITM proxy that downloads the world to Anvil format while you play.",
   "main": "dist/index.js",
