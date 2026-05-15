@@ -26,19 +26,23 @@ export class PhaseTracker {
   }
 
   onPlayLogin(p: any) {
-    // Field names vary across versions; try the common ones defensively.
-    this.dimensionName = p.worldName ?? p.dimension?.name ?? p.dimension ?? this.dimensionName
-    this.dimensionType = p.worldType ?? p.dimensionType ?? this.dimensionType
+    // 1.21.x bundles dimension/seed/gamemode inside a worldState SpawnInfo
+    // sub-container; older versions had them at the top level. Read both.
+    const ws = p.worldState ?? {}
+    this.dimensionName = ws.name ?? p.worldName ?? p.dimension?.name ?? p.dimension ?? this.dimensionName
+    this.dimensionType = ws.dimensionType ?? p.worldType ?? p.dimensionType ?? this.dimensionType
     this.viewDistance = p.viewDistance ?? this.viewDistance
-    this.hashedSeed = BigInt(p.hashedSeed ?? 0)
-    this.gameMode = p.gameMode ?? this.gameMode
+    this.hashedSeed = BigInt((ws.hashedSeed ?? p.hashedSeed ?? 0) as any)
+    const gm = ws.gamemode ?? p.gameMode
+    this.gameMode = typeof gm === 'number' ? gm : this.gameMode
     log.info(`play login: dim=${this.dimensionName} type=${this.dimensionType} view=${this.viewDistance}`)
   }
 
   onRespawn(p: any) {
     const prev = this.dimensionName
-    this.dimensionName = p.worldName ?? p.dimension ?? this.dimensionName
-    this.dimensionType = p.worldType ?? p.dimensionType ?? this.dimensionType
+    const ws = p.worldState ?? {}
+    this.dimensionName = ws.name ?? p.worldName ?? p.dimension ?? this.dimensionName
+    this.dimensionType = ws.dimensionType ?? p.worldType ?? p.dimensionType ?? this.dimensionType
     if (prev !== this.dimensionName) log.info(`dimension change: ${prev} -> ${this.dimensionName}`)
   }
 }
