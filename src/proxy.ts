@@ -26,8 +26,10 @@ export interface ProxyOpts {
   version: string
   outputDir: string
   flushIntervalSec: number
-  /** Cape alias to activate on the user's Mojang profile before connecting
-   * (e.g. "MineCon 2011", "Migrator"). Must be a cape the account owns. */
+  /** Cape alias for the visual-only spoof. The proxy rewrites the player_info
+   * textures URL for the user's own UUID so MC renders this cape on the
+   * player — no Mojang account ownership required. Aliases: see capeInject.ts
+   * (e.g. "MineCon 2011", "MineCon 2012", "Migrator", "Founders"). */
   cape?: string
 }
 
@@ -97,19 +99,38 @@ export function startProxy(opts: ProxyOpts): ProxySession {
   let running = true
   let stopped = false
 
-  // Optional pre-auth cape switch. Fire and (best effort) await before we
-  // create the target client, so the new cape is reflected in the player
-  // profile target fetches on hasJoined. Failures are non-fatal — we still
-  // connect with whatever cape was active before.
+  // Cape spoof — visual-only. We resolve the cape alias to a texture hash and,
+  // once the player_info packet for our own UUID flows through target, rewrite
+  // the textures property to point at that cape. No Mojang-side change, no
+  // ownership required. Other players on target still see whatever your real
+  // account has (Mojang serves that, we can't fake it).
+  const { capeUrlForAlias, injectCapeIntoPlayerInfo, knownCapeAliases } = require('./capeInject') as typeof import('./capeInject')
+  let capeUrl: string | null = null
   if (opts.cape) {
-    ;(async () => {
-      const { getMinecraftJavaToken, applyCape } = require('./mojang') as typeof import('./mojang')
-      const token = await getMinecraftJavaToken(opts.msEmail, path.resolve('.auth'))
-      if (!token) { log.warn(`cape switch skipped: no auth token`); return }
-      const r = await applyCape(token, opts.cape!)
-      if (!r.ok) log.warn(`cape switch: ${r.error}`)
-    })().catch((e) => log.warn(`cape switch threw: ${(e as Error).message}`))
+    capeUrl = capeUrlForAlias(opts.cape)
+    if (!capeUrl) {
+      log.warn(`cape "${opts.cape}" not in alias table. Known: ${knownCapeAliases().join(', ')}`)
+    } else {
+      log.info(`cape spoof armed: "${opts.cape}" -> ${capeUrl}`)
+    }
   }
+
+  // Fetch the real Mojang UUID for our account so we know which player_info
+  // entry to rewrite. Non-fatal if it fails — we just skip the spoof.
+  let selfUuid: string | null = null
+  ;(async () => {
+    if (!capeUrl) return
+    try {
+      const { getMinecraftJavaToken, getProfile } = require('./mojang') as typeof import('./mojang')
+      const token = await getMinecraftJavaToken(opts.msEmail, path.resolve('.auth'))
+      if (!token) { log.warn('cape spoof: no auth token, profile fetch skipped'); return }
+      const profile = await getProfile(token)
+      selfUuid = profile.id
+      log.info(`cape spoof: self uuid = ${selfUuid} (${profile.name})`)
+    } catch (e) {
+      log.warn(`cape spoof: profile fetch failed: ${(e as Error).message}`)
+    }
+  })()
 
   // ============== PHASE 1: connect to target & capture registries ==============
   log.info(`connecting to target ${opts.targetHost}:${opts.targetPort} to capture registries...`)
@@ -136,6 +157,16 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     phase.observe(meta.state)
     try { capture.handle(meta, data) }
     catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
+
+    // Spoof our own cape: rewrite player_info textures before this packet
+    // gets buffered or forwarded. Idempotent — won't touch other players.
+    if (capeUrl && selfUuid && meta.state === 'play' && meta.name === 'player_info') {
+      try {
+        if (injectCapeIntoPlayerInfo(data, selfUuid, capeUrl)) {
+          trace(`cape spoof applied to player_info`)
+        }
+      } catch (e) { trace(`cape spoof fail: ${(e as Error).message}`) }
+    }
 
     // Capture config-phase packets for replay to MC client
     if (meta.state === 'configuration') {
