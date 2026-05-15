@@ -89,7 +89,12 @@ export interface TransformOpts {
 export interface TransformResult {
   ok: boolean
   destPath?: string
+  outputCopyPath?: string
   error?: string
+}
+
+function defaultOutputDir(): string {
+  return path.join(os.homedir(), 'Documents', 'ChunkScribe', 'worlds')
 }
 
 /**
@@ -139,7 +144,24 @@ export async function transformToWorld(opts: TransformOpts): Promise<TransformRe
     }
   }
 
-  return { ok: true, destPath }
+  // Secondary copy into Documents/ChunkScribe/worlds/<name> so the user keeps
+  // a portable archive even after MC's saves folder rotates or they delete
+  // the singleplayer world.
+  let outputCopyPath: string | undefined
+  try {
+    const outRoot = defaultOutputDir()
+    await fsp.mkdir(outRoot, { recursive: true })
+    const outPath = path.join(outRoot, cleanName)
+    // overwrite-safe: drop any prior copy with the same name first
+    try { await fsp.rm(outPath, { recursive: true, force: true }) } catch {}
+    await fsp.cp(destPath, outPath, { recursive: true })
+    outputCopyPath = outPath
+    log.info(`also copied to output archive: ${outPath}`)
+  } catch (e) {
+    log.warn(`output-archive copy failed: ${(e as Error).message}`)
+  }
+
+  return { ok: true, destPath, outputCopyPath }
 }
 
 function sanitizeName(s: string): string {

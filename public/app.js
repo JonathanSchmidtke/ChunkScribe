@@ -141,7 +141,9 @@ $('btn-transform').onclick = async () => {
   $('btn-transform').disabled = false
   if (r.ok) {
     log('info', `transform complete → ${r.destPath}`)
-    alert(`Done!\nOpen Minecraft → Singleplayer → "${destName}".\n\nPath:\n${r.destPath}`)
+    if (r.outputCopyPath) log('info', `archive copy → ${r.outputCopyPath}`)
+    const archiveLine = r.outputCopyPath ? `\n\nArchive copy:\n${r.outputCopyPath}` : ''
+    alert(`Done!\nOpen Minecraft → Singleplayer → "${destName}".\n\nPath:\n${r.destPath}${archiveLine}`)
   } else {
     log('err', `transform failed: ${r.error}`)
     alert('Transform failed: ' + (r.error || 'unknown'))
