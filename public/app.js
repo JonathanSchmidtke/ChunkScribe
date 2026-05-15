@@ -210,8 +210,8 @@ function queueChunk(dim, x, z) {
 
 function drainChunkQueue() {
   rafPending = false
-  let activeDimDirty = false
   let needTabRender = false
+  const newChunks = []  // only the chunks added THIS frame for the active dim
   for (const [dim, x, z] of chunkQueue) {
     if (!state.chunksByDim[dim]) {
       state.chunksByDim[dim] = new Set()
@@ -225,13 +225,32 @@ function drainChunkQueue() {
       state.activeDim = dim
       needTabRender = true
     }
-    if (dim === state.activeDim) activeDimDirty = true
+    if (dim === state.activeDim) newChunks.push([x, z])
   }
   chunkQueue.length = 0
-  if (needTabRender) renderDimTabs()
-  // One redraw covers every chunk added this frame instead of N fillRects.
-  if (activeDimDirty) redraw()
+  if (needTabRender) {
+    renderDimTabs()
+    redraw()  // tab/dim change forces a full repaint
+  } else if (newChunks.length) {
+    // Incremental paint: only the new squares this frame. Skips the
+    // walk-all-chunks redraw which gets slow once chunks count > a few thousand.
+    paintChunks(newChunks)
+  }
   updateStats()
+}
+
+function paintChunks(coords) {
+  const r = canvas.getBoundingClientRect()
+  const cx = r.width / 2, cy = r.height / 2
+  const s = state.view.scale
+  const side = Math.max(1, s - 0.5)
+  ctx.fillStyle = '#6cb56a'
+  for (const [x, z] of coords) {
+    const px = cx + (x - state.view.x) * s
+    const py = cy + (z - state.view.z) * s
+    if (px < -s || py < -s || px > r.width || py > r.height) continue
+    ctx.fillRect(Math.floor(px), Math.floor(py), side, side)
+  }
 }
 
 function drawChunk(x, z) {
