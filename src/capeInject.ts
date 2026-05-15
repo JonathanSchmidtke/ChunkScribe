@@ -65,20 +65,18 @@ export function injectCapeIntoPlayerInfo(data: any, selfUuid: string, capeUrl: s
         const decoded = JSON.parse(Buffer.from(prop.value, 'base64').toString('utf8'))
         if (!decoded.textures) decoded.textures = {}
         decoded.textures.CAPE = { url: capeUrl }
-        // Upgrade SKIN url to HTTPS too — target may have sent http://, which
-        // modern MC silently rejects (causes the "white face / no overlay"
-        // partial render the user saw).
+        // Upgrade URLs to HTTPS — 1.20.5+ rejects http://
         if (decoded.textures?.SKIN?.url) {
           decoded.textures.SKIN.url = String(decoded.textures.SKIN.url).replace(/^http:\/\//, 'https://')
         }
-        // Mojang sets signatureRequired=true on real textures; if we leave it
-        // true and drop the (now-invalid) signature, the client tosses the
-        // whole property and we lose skin AND cape. Either flag has to go.
-        if ('signatureRequired' in decoded) delete decoded.signatureRequired
         prop.value = Buffer.from(JSON.stringify(decoded)).toString('base64')
-        // signature was computed for the original textures bytes; mutating
-        // them invalidates it. Drop so the client doesn't try to verify.
-        if ('signature' in prop) prop.signature = undefined
+        // Keep the original Mojang signature + signatureRequired untouched.
+        // The signature will mismatch our edited content, BUT vanilla MC
+        // skips the signature check whenever the profile UUID being rendered
+        // matches the local player's own UUID (Antonio32a's well-known trick).
+        // Stripping the signature was triggering the "fallback to default
+        // Steve, no overlay layers, no cape" code path — keeping it intact
+        // lets the UUID-match skip apply and the textures render.
         modified = true
       } catch {
         // unparseable — leave alone
