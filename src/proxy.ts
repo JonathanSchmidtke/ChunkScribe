@@ -115,28 +115,40 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     }
   }
 
-  // Fetch the real Mojang UUID for our account so we know which player_info
-  // entry to rewrite. Non-fatal if it fails — we just skip the spoof.
+  // We need to know which UUID to rewrite, so fetch profile BEFORE connecting.
+  // Wrap the warmup in an async IIFE — startProxy still returns the session
+  // synchronously, but the actual target connection waits ~0.5s for the
+  // profile fetch. If the fetch fails the warmup still proceeds (no spoof).
   let selfUuid: string | null = null
-  ;(async () => {
-    if (!capeUrl) return
-    try {
-      const { getMinecraftJavaToken, getProfile } = require('./mojang') as typeof import('./mojang')
-      const token = await getMinecraftJavaToken(opts.msEmail, path.resolve('.auth'))
-      if (!token) { log.warn('cape spoof: no auth token, profile fetch skipped'); return }
-      const profile = await getProfile(token)
-      selfUuid = profile.id
-      log.info(`cape spoof: self uuid = ${selfUuid} (${profile.name})`)
-    } catch (e) {
-      log.warn(`cape spoof: profile fetch failed: ${(e as Error).message}`)
-    }
-  })()
 
-  // ============== PHASE 1: connect to target & capture registries ==============
+  let target: any = null
+  ;(async () => {
+    if (capeUrl) {
+      try {
+        const { getMinecraftJavaToken, getProfile } = require('./mojang') as typeof import('./mojang')
+        const token = await getMinecraftJavaToken(opts.msEmail, path.resolve('.auth'))
+        if (token) {
+          const profile = await getProfile(token)
+          selfUuid = profile.id
+          log.info(`cape spoof: self uuid = ${selfUuid} (${profile.name})`)
+        } else {
+          log.warn('cape spoof: no auth token; player_info rewrite disabled')
+        }
+      } catch (e) {
+        log.warn(`cape spoof: profile fetch failed: ${(e as Error).message}`)
+      }
+    }
+    startWarmup()
+  })().catch((e) => {
+    log.err(`startProxy async init failed: ${(e as Error).message}`)
+    emit({ type: 'session', state: 'error', detail: (e as Error).message })
+  })
+
+  function startWarmup() {
   log.info(`connecting to target ${opts.targetHost}:${opts.targetPort} to capture registries...`)
   trace(`WARMUP_START target=${opts.targetHost}:${opts.targetPort}`)
 
-  const target = mc.createClient({
+  target = mc.createClient({
     host: opts.targetHost,
     port: opts.targetPort,
     username: opts.msEmail || 'ChunkScribe',
@@ -226,6 +238,7 @@ export function startProxy(opts: ProxyOpts): ProxySession {
   })
   target.on('kick_disconnect', (p: any) => { log.warn('kicked (play):', p?.reason); trace(`TARGET_KICK ${JSON.stringify(p?.reason)}`) })
   target.on('disconnect',      (p: any) => { log.warn('disconnected:',  p?.reason); trace(`TARGET_DISCONNECT ${JSON.stringify(p?.reason)}`) })
+  } // end startWarmup
 
   // Periodic flush so chunks persist even if we never see a disconnect
   flushTimer = opts.flushIntervalSec > 0
@@ -290,6 +303,19 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       trace(`PLAYER_JOIN ${client.username}`)
       activeClient = client
 
+      // Defense in depth: re-run the cape inject across all buffered packets
+      // in case the profile fetch hadn't completed when target streamed its
+      // first player_info packet. Re-runs are idempotent.
+      if (capeUrl && selfUuid) {
+        let touched = 0
+        for (const pkt of captured.playBuffer) {
+          if (pkt.name === 'player_info') {
+            try { if (injectCapeIntoPlayerInfo(pkt.data, selfUuid, capeUrl)) touched++ } catch {}
+          }
+        }
+        log.info(`cape spoof: re-injected on ${touched} buffered player_info packets`)
+      }
+
       // Replay target's actual play.login so the client knows about target's
       // dimensions/seed/gamemode (and so its registries now line up).
       if (captured.playLogin) {
@@ -308,12 +334,18 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       // forever because target has already finished sending the initial
       // world view and won't re-send.
       log.info(`replaying ${captured.playBuffer.length} buffered play packets to MC...`)
-      let replayed = 0, replayFailed = 0
+      let replayed = 0, replayFailed = 0, capesInjectedAtReplay = 0
       for (const pkt of captured.playBuffer) {
+        // Defence-in-depth: if the cape inject couldn't fire at receive time
+        // (selfUuid was still loading), apply it here on replay before the
+        // packet hits the MC client.
+        if (capeUrl && selfUuid && pkt.name === 'player_info') {
+          try { if (injectCapeIntoPlayerInfo(pkt.data, selfUuid, capeUrl)) capesInjectedAtReplay++ } catch {}
+        }
         try { client.write(pkt.name, pkt.data); replayed++ }
         catch (e) { replayFailed++; trace(`replay FAIL ${pkt.name}: ${(e as Error).message}`) }
       }
-      log.info(`replay done (${replayed} ok, ${replayFailed} failed)`)
+      log.info(`replay done (${replayed} ok, ${replayFailed} failed${capeUrl ? `, cape spoofed in ${capesInjectedAtReplay} player_info pkts` : ''})`)
       // Drop the buffer; future packets flow live via target.on('packet')
       captured.playBuffer.length = 0
 
