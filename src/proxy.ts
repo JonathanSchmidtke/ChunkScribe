@@ -154,6 +154,45 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     log.info(`client connected: ${client.username} (state=${client.state})`)
     trace(`PLAYER_JOIN client=${client.username} state=${client.state}`)
 
+    // mc.createServer's auto config phase just transitions the client to
+    // play state; it does NOT bootstrap a player entity, inventory, or any
+    // play-state world. Without a synthetic play.login here, any subsequent
+    // packet referencing the player (window_items, entity_metadata for
+    // player, abilities, etc.) NPEs and the client disconnects silently.
+    //
+    // We send a minimal vanilla-shaped login using safe values that match
+    // the dimension_type registry we sent in config. gamemode=spectator
+    // lets the player fly through whatever world materialises. Once this
+    // packet is processed the client has a real player entity and we can
+    // freely forward target's packets into it.
+    try {
+      client.write('login', {
+        entityId:           1,
+        isHardcore:         false,
+        worldNames:         ['minecraft:overworld', 'minecraft:the_nether', 'minecraft:the_end'],
+        maxPlayers:         20,
+        viewDistance:       12,
+        simulationDistance: 12,
+        reducedDebugInfo:   false,
+        enableRespawnScreen:true,
+        doLimitedCrafting:  false,
+        worldState: {
+          dimension:        0,
+          name:             'minecraft:overworld',
+          hashedSeed:       [0, 0],
+          gamemode:         'spectator',
+          previousGamemode: 255,
+          isDebug:          false,
+          isFlat:           false,
+          death:            undefined,
+          portalCooldown:   0,
+          seaLevel:         64,
+        },
+        enforcesSecureChat: false,
+      })
+      trace('SHIM synthetic play.login sent')
+    } catch (e) { trace(`SHIM synthetic play.login FAIL: ${(e as Error).message}`) }
+
     const phase = new PhaseTracker()
     const saver = new WorldSaver(worldDir, opts.version, phase)
     const capture = new Capture(phase, saver, opts.version)
@@ -203,35 +242,30 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       catch (e) { trace(`c->s WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
 
+    // Capture-only mode: target's registries (biome IDs, dimension type IDs,
+    // enchantment IDs etc.) differ from the bundled-minecraft-data registries
+    // we sent the client during config phase. ANY play packet referencing a
+    // target-specific ID (chunks, block updates, entities) makes the client's
+    // local registry lookup fail and disconnect.
+    //
+    // Since the goal of ChunkScribe is to *download* the world, not to play
+    // it through the proxy, we route target's full play stream into the
+    // capture pipeline and don't forward to the client at all. The client
+    // stays alive in its bundled world (looking at nothing useful) but its
+    // session keeps us authenticated, and chunks get saved to disk via
+    // capture+saver. The user can move around the real server with /tp
+    // commands (forwarded c->s normally) and watch the GUI chunk map fill.
     target.on('packet', (data: any, meta: any) => {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
       catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
 
-      const ok = client.state === target.state
-      if (!ok) { trace(`s->c ${meta.state}.${meta.name} DROP(c=${client.state})`); return }
-
-      // mc.createServer drove the client through its own config phase using
-      // bundled registries that don't match target's. Forwarding target's
-      // play.login (or even a rewritten respawn) references dimension/biome
-      // IDs the client's local registry doesn't have — instant disconnect.
-      //
-      // Drop it entirely. The client keeps its bundled overworld world setup
-      // and chunks flow into that. This means dimension switches won't show
-      // correctly, but enough of the play stream is usable to capture chunks.
-      if (meta.state === 'play' && meta.name === 'login') {
-        trace('s->c DROP play.login (registries don\'t match — keeping client\'s bundled world)')
+      // Keep-alive must pass through or the client kicks itself.
+      if (meta.name === 'keep_alive') {
+        try { client.write('keep_alive', data) } catch {}
         return
       }
-      // Same logic for respawn (dim change to nether/end would fail registry lookup).
-      if (meta.state === 'play' && meta.name === 'respawn') {
-        trace('s->c DROP play.respawn (dim id may not be in client\'s bundled registry)')
-        return
-      }
-
-      trace(`s->c ${meta.state}.${meta.name} FWD`)
-      try { client.write(meta.name, data) }
-      catch (e) { trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
+      trace(`s->c CAPTURE ${meta.state}.${meta.name}`)
     })
 
     target.on('state', (newState: string, oldState: string) => {
