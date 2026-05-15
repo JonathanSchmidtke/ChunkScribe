@@ -64,12 +64,17 @@ export class WorldSaver {
     for (const [dim, store] of stores) {
       if (store.size() === 0) continue
       const dir = path.join(this.root, this.dimSubpath(dim))
-      await fs.mkdir(path.join(dir, 'region'), { recursive: true })
+      const regionDir = path.join(dir, 'region')
+      await fs.mkdir(regionDir, { recursive: true })
 
       let provider: any
       try {
         const Cls = AnvilFactory(this.version)
-        provider = new Cls(dir)
+        // prismarine-provider-anvil's Anvil class doesn't auto-append /region —
+        // it writes .mca files into whatever path it's handed. Pass the region
+        // dir directly so files land in the canonical Mojang layout
+        // (<dim>/region/r.X.Z.mca) and listScans / vanilla MC find them.
+        provider = new Cls(regionDir)
       } catch (e) {
         log.err(`anvil provider init failed for ${this.version}: ${(e as Error).message}`)
         continue

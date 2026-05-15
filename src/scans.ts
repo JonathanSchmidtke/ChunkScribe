@@ -60,8 +60,10 @@ async function inspectScan(root: string, name: string): Promise<ScanInfo | null>
   const [hasOverworld, hasNether, hasEnd] = await Promise.all([has(overworld), has(nether), has(end)])
   const vanillaCounts = await Promise.all([countMca(overworld), countMca(nether), countMca(end)])
 
-  // Also look for datapack-dim region files (dimensions/<ns>/<name>/region/*.mca).
-  // A server with only custom dims (gridlock:limbo etc.) would otherwise look empty.
+  // Also look for datapack-dim region files. Two layouts in the wild:
+  //   - canonical: dimensions/<ns>/<name>/region/*.mca   (v0.9.7+)
+  //   - legacy:    dimensions/<ns>/<name>/*.mca          (pre-fix scans)
+  // Count both so old captures don't appear empty.
   let customCount = 0
   try {
     const dimsDir = path.join(root, 'dimensions')
@@ -71,7 +73,9 @@ async function inspectScan(root: string, name: string): Promise<ScanInfo | null>
       const dims = await fsp.readdir(path.join(dimsDir, ns.name), { withFileTypes: true })
       for (const dim of dims) {
         if (!dim.isDirectory()) continue
-        customCount += await countMca(path.join(dimsDir, ns.name, dim.name, 'region'))
+        const dimRoot = path.join(dimsDir, ns.name, dim.name)
+        customCount += await countMca(path.join(dimRoot, 'region'))
+        customCount += await countMca(dimRoot)
       }
     }
   } catch {}
@@ -284,8 +288,11 @@ async function remapCustomDimensions(root: string): Promise<string[]> {
 
     for (const dim of dimEntries) {
       if (!dim.isDirectory()) continue
-      const srcRegion = path.join(nsPath, dim.name, 'region')
-      try { if (!(await fsp.stat(srcRegion)).isDirectory()) continue } catch { continue }
+      const dimRoot = path.join(nsPath, dim.name)
+      // Collect .mca files from both canonical (dim/region/) and legacy (dim/).
+      const sources: string[] = []
+      try { if ((await fsp.stat(path.join(dimRoot, 'region'))).isDirectory()) sources.push(path.join(dimRoot, 'region')) } catch {}
+      sources.push(dimRoot)
 
       const tag = `${ns.name}/${dim.name}`.toLowerCase()
       let target: string
@@ -294,20 +301,22 @@ async function remapCustomDimensions(root: string): Promise<string[]> {
       else                                target = path.join(root, 'region')
 
       await fsp.mkdir(target, { recursive: true })
-      const files = await fsp.readdir(srcRegion)
-      for (const f of files) {
-        const src = path.join(srcRegion, f)
-        const dst = path.join(target, f)
-        try { await fsp.access(dst); continue } catch {}     // collision: keep existing
-        try { await fsp.rename(src, dst) }
-        catch {
-          // rename can fail across drives — fall back to copy+unlink
-          try { await fsp.copyFile(src, dst); await fsp.unlink(src) } catch {}
+      let moved = 0
+      for (const src of sources) {
+        let files: string[] = []
+        try { files = (await fsp.readdir(src)).filter(f => f.endsWith('.mca')) } catch {}
+        for (const f of files) {
+          const srcFile = path.join(src, f)
+          const dst = path.join(target, f)
+          try { await fsp.access(dst); continue } catch {}
+          try { await fsp.rename(srcFile, dst); moved++ }
+          catch {
+            try { await fsp.copyFile(srcFile, dst); await fsp.unlink(srcFile); moved++ } catch {}
+          }
         }
       }
-      // tidy
-      try { await fsp.rm(path.join(nsPath, dim.name), { recursive: true, force: true }) } catch {}
-      remapped.push(`${ns.name}:${dim.name} -> ${path.relative(root, target)}`)
+      try { await fsp.rm(dimRoot, { recursive: true, force: true }) } catch {}
+      remapped.push(`${ns.name}:${dim.name} -> ${path.relative(root, target)} (${moved} files)`)
     }
     // remove namespace folder if empty
     try {
