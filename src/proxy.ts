@@ -26,6 +26,9 @@ export interface ProxyOpts {
   version: string
   outputDir: string
   flushIntervalSec: number
+  /** Cape alias to activate on the user's Mojang profile before connecting
+   * (e.g. "MineCon 2011", "Migrator"). Must be a cape the account owns. */
+  cape?: string
 }
 
 export interface ProxySession {
@@ -93,6 +96,20 @@ export function startProxy(opts: ProxyOpts): ProxySession {
   let flushTimer: NodeJS.Timeout | null = null
   let running = true
   let stopped = false
+
+  // Optional pre-auth cape switch. Fire and (best effort) await before we
+  // create the target client, so the new cape is reflected in the player
+  // profile target fetches on hasJoined. Failures are non-fatal — we still
+  // connect with whatever cape was active before.
+  if (opts.cape) {
+    ;(async () => {
+      const { getMinecraftJavaToken, applyCape } = require('./mojang') as typeof import('./mojang')
+      const token = await getMinecraftJavaToken(opts.msEmail, path.resolve('.auth'))
+      if (!token) { log.warn(`cape switch skipped: no auth token`); return }
+      const r = await applyCape(token, opts.cape!)
+      if (!r.ok) log.warn(`cape switch: ${r.error}`)
+    })().catch((e) => log.warn(`cape switch threw: ${(e as Error).message}`))
+  }
 
   // ============== PHASE 1: connect to target & capture registries ==============
   log.info(`connecting to target ${opts.targetHost}:${opts.targetPort} to capture registries...`)

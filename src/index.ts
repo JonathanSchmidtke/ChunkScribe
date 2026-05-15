@@ -59,6 +59,7 @@ function loadDefaults(): ProxyOpts {
       parseInt(process.env.FLUSH_INTERVAL_SEC || '', 10) ||
       saved.flushIntervalSec ||
       30,
+    cape: process.env.MC_CAPE || saved.cape || undefined,
   }
 }
 

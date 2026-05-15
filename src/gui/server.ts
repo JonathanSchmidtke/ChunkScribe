@@ -139,6 +139,7 @@ function sanitizeOpts(body: any): Partial<ProxyOpts> {
   if (typeof body?.version     === 'string') o.version     = body.version.trim()
   if (typeof body?.outputDir   === 'string') o.outputDir   = body.outputDir
   if (typeof body?.flushIntervalSec === 'number') o.flushIntervalSec = body.flushIntervalSec
+  if (typeof body?.cape       === 'string') o.cape       = body.cape.trim() || undefined
   return o
 }
 

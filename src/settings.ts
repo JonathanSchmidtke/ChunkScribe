@@ -33,6 +33,7 @@ export function saveOpts(opts: ProxyOpts) {
       version:    opts.version,
       outputDir:  opts.outputDir,
       flushIntervalSec: opts.flushIntervalSec,
+      cape:       opts.cape,
     }
     fs.writeFileSync(FILE, JSON.stringify(payload, null, 2), 'utf8')
   } catch (e) {

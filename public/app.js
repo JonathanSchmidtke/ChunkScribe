@@ -52,6 +52,7 @@ function populateForm(d) {
   $('targetHost').value      = d.targetHost ?? ''
   $('targetPort').value      = d.targetPort ?? 25565
   $('msEmail').value         = d.msEmail ?? ''
+  $('cape').value            = d.cape ?? ''
   $('listenPort').value      = d.listenPort ?? 25566
   $('version').value         = d.version ?? '1.21.11'
   $('outputDir').value       = d.outputDir ?? ''
@@ -65,6 +66,7 @@ function readForm() {
     targetHost: $('targetHost').value.trim(),
     targetPort: parseInt($('targetPort').value, 10) || 25565,
     msEmail:    $('msEmail').value.trim(),
+    cape:       $('cape').value.trim(),
     listenPort: parseInt($('listenPort').value, 10) || 25566,
     version:    $('version').value.trim() || '1.21.11',
     outputDir:  $('outputDir').value.trim(),
