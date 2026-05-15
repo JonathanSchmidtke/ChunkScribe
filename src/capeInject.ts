@@ -27,7 +27,8 @@ const CAPE_HASHES: Record<string, string> = {
 export function capeUrlForAlias(alias: string): string | null {
   const key = alias.trim().toLowerCase().replace(/\s+/g, '')
   const hash = CAPE_HASHES[key]
-  return hash ? `http://textures.minecraft.net/texture/${hash}` : null
+  // HTTPS — modern MC (1.20.5+) silently drops textures with http:// URLs.
+  return hash ? `https://textures.minecraft.net/texture/${hash}` : null
 }
 
 export function knownCapeAliases(): string[] {
@@ -64,6 +65,12 @@ export function injectCapeIntoPlayerInfo(data: any, selfUuid: string, capeUrl: s
         const decoded = JSON.parse(Buffer.from(prop.value, 'base64').toString('utf8'))
         if (!decoded.textures) decoded.textures = {}
         decoded.textures.CAPE = { url: capeUrl }
+        // Upgrade SKIN url to HTTPS too — target may have sent http://, which
+        // modern MC silently rejects (causes the "white face / no overlay"
+        // partial render the user saw).
+        if (decoded.textures?.SKIN?.url) {
+          decoded.textures.SKIN.url = String(decoded.textures.SKIN.url).replace(/^http:\/\//, 'https://')
+        }
         // Mojang sets signatureRequired=true on real textures; if we leave it
         // true and drop the (now-invalid) signature, the client tosses the
         // whole property and we lose skin AND cape. Either flag has to go.
