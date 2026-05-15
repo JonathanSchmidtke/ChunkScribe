@@ -42,6 +42,11 @@ export function startGui(opts: GuiServerOpts): { url: string; close: () => void 
         session = null
         return { ok: true }
       },
+      chat: (text: string) => {
+        if (!session?.isRunning()) return { ok: false, error: 'proxy not running' }
+        const ok = session.sendChat(text)
+        return ok ? { ok: true } : { ok: false, error: 'chat send failed (target not in play state?)' }
+      },
     })
   })
 
@@ -133,6 +138,7 @@ type Handlers = {
   getDefaults: () => ProxyOpts
   start: (body: any) => { ok: boolean; error?: string }
   stop: () => Promise<{ ok: boolean; error?: string }>
+  chat: (text: string) => { ok: boolean; error?: string }
 }
 
 const MIME: Record<string, string> = {
@@ -187,6 +193,13 @@ function handleApi(req: http.IncomingMessage, res: http.ServerResponse, h: Handl
   }
   if (req.method === 'POST' && url === '/api/stop') {
     return h.stop().then(r => json(200, r))
+  }
+  if (req.method === 'POST' && url === '/api/chat') {
+    return readBody().then(body => {
+      const text = typeof body?.text === 'string' ? body.text : ''
+      if (!text) return json(400, { ok: false, error: 'empty text' })
+      return json(200, h.chat(text))
+    })
   }
 
   json(404, { ok: false, error: 'not found' })

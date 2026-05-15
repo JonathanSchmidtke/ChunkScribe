@@ -72,6 +72,8 @@ export interface ProxySession {
   chunksByDim: () => Record<string, number>
   /** Aggregate capture counts (entities, containers). */
   extraStats: () => { entities: number; containers: number }
+  /** Send a chat message / command from the proxy account to target. */
+  sendChat: (text: string) => boolean
 }
 
 export function startProxy(opts: ProxyOpts): ProxySession {
@@ -242,54 +244,28 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       catch (e) { trace(`c->s WRITE_FAIL ${meta.name}: ${(e as Error).message}`) }
     })
 
-    // Selective forward: chunks + world rendering get sent to the client so it
-    // exits "Loading terrain" and the player can move; everything that depends
-    // on server-specific registries (inventories, entities-with-custom-types,
-    // damage events) stays capture-only to avoid NPEs from id-lookup failures.
+    // Capture-only mode. We can't safely forward chunks to the client: target's
+    // chunk biome palettes reference biome IDs from target's actual registry,
+    // which doesn't match the bundled-minecraft-data registry we gave the
+    // client during config. The client crashes on "No value with id 65" the
+    // moment a chunk arrives.
     //
-    // Forwarded (lets the user actually pilot the player around the world):
-    //   - map_chunk / chunk_batch_*       (terrain)
-    //   - block_update / multi_block_*    (block changes)
-    //   - position                        (player teleport)
-    //   - spawn_position, update_view_position, update_view_distance
-    //   - keep_alive                      (required or kicked)
-    //   - update_time                     (cosmetic but harmless)
+    // Only keep_alive flows back to the client so its session stays alive and
+    // the bridge keeps consuming target's packets. Chunks, entities, blocks
+    // all land in the capture pipeline and get saved to disk via WorldSaver.
     //
-    // Captured but NOT forwarded (would crash client on registry mismatch):
-    //   - login, respawn                  (already replaced by our synthetic)
-    //   - window_items, set_slot          (inventory state set up by login)
-    //   - entity_metadata, spawn_entity   (entity-type id mismatches)
-    //   - declare_recipes, recipe_book_*  (recipe id mismatches)
-    //   - difficulty, abilities, etc.     (cosmetic / harmless to drop)
-    const FORWARD_TO_CLIENT = new Set([
-      'keep_alive',
-      'map_chunk', 'level_chunk_with_light',
-      'chunk_batch_start', 'chunk_batch_finished',
-      'unload_chunk',
-      'update_view_position', 'update_view_distance',
-      'spawn_position',
-      'position',
-      'block_update', 'block_change',
-      'multi_block_change', 'section_blocks_update', 'update_section_blocks',
-      'update_time',
-      'game_state_change',
-    ])
-
+    // The user moves their player around on target via /tp chat commands sent
+    // through the GUI (server.ts /api/chat).
     target.on('packet', (data: any, meta: any) => {
       phase.observe(meta.state)
       try { capture.handle(meta, data) }
       catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
 
-      if (meta.state !== 'play' || !FORWARD_TO_CLIENT.has(meta.name)) {
-        trace(`s->c CAPTURE ${meta.state}.${meta.name}`)
+      if (meta.name === 'keep_alive') {
+        try { client.write('keep_alive', data) } catch {}
         return
       }
-      try {
-        client.write(meta.name, data)
-        trace(`s->c FWD ${meta.state}.${meta.name}`)
-      } catch (e) {
-        trace(`s->c WRITE_FAIL ${meta.name}: ${(e as Error).message}`)
-      }
+      trace(`s->c CAPTURE ${meta.state}.${meta.name}`)
     })
 
     target.on('state', (newState: string, oldState: string) => {
@@ -321,6 +297,29 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       entities:   activeCapture?.mobs.count() ?? 0,
       containers: activeCapture?.containers.totalCaptured ?? 0,
     }),
+    sendChat: (text: string) => {
+      if (!activeTarget || activeTarget.state !== 'play') return false
+      try {
+        const trimmed = text.trim()
+        if (trimmed.startsWith('/')) {
+          activeTarget.write('chat_command', { command: trimmed.slice(1) })
+        } else {
+          activeTarget.write('chat_message', {
+            message: trimmed,
+            timestamp: BigInt(Date.now()),
+            salt: 0n,
+            signature: undefined,
+            offset: 0,
+            acknowledged: new Uint8Array(3),
+          })
+        }
+        log.info(`sent to target: ${trimmed}`)
+        return true
+      } catch (e) {
+        log.warn(`sendChat failed: ${(e as Error).message}`)
+        return false
+      }
+    },
     stop: async () => {
       if (!running) return
       running = false

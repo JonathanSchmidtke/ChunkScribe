@@ -84,6 +84,21 @@ $('btn-stop').onclick = async () => {
   await fetch('/api/stop', { method: 'POST' }).catch(() => {})
 }
 
+$('chat-form').onsubmit = async (e) => {
+  e.preventDefault()
+  const input = $('chat-input')
+  const text = input.value.trim()
+  if (!text) return
+  input.value = ''
+  log('info', `> ${text}`)
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }))
+  if (!r.ok) log('warn', `chat failed: ${r.error}`)
+}
+
 function applySession(s, detail) {
   const dot = $('status-dot')
   const txt = $('status-text')

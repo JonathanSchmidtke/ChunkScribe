@@ -62,7 +62,12 @@ main {
 }
 #settings  { grid-column: 1; grid-row: 1 / span 2; }
 .map-panel { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; padding-bottom: 6px; }
-.log-panel { grid-column: 2; grid-row: 2; padding: 8px 16px; }
+.log-panel { grid-column: 2; grid-row: 2; padding: 8px 16px; display: flex; flex-direction: column; }
+.log-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.log-header h2 { margin: 0; }
+.chat-form { display: flex; gap: 6px; flex: 1; }
+.chat-form input { flex: 1; padding: 5px 9px; font: 11px/1.4 ui-monospace, Consolas, monospace; }
+.chat-form button { flex: 0 0 auto; padding: 5px 12px; font-size: 11px; }
 
 h2 {
   margin: 14px 0 8px;

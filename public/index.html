@@ -77,7 +77,13 @@
     </section>
 
     <section class="panel log-panel">
-      <h2>Log</h2>
+      <div class="log-header">
+        <h2>Log</h2>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <input type="text" id="chat-input" placeholder='Send to target (e.g. "/tp ~10 ~ ~" or "hi")' />
+          <button type="submit">Send</button>
+        </form>
+      </div>
       <div id="log" class="log"></div>
     </section>
   </main>
