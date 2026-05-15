@@ -278,6 +278,18 @@ export function startProxy(opts: ProxyOpts): ProxySession {
       const origWrite = client.write.bind(client)
       let preludeSent = false
       client.write = (name: string, data: any) => {
+        // Override offline-mode's deterministic-from-username UUID with the
+        // user's real Mojang UUID. Without this, target's player_info uses
+        // the real UUID but MC's own player entity has the offline UUID —
+        // they don't match, so spoofed textures (and the real skin from
+        // sessionserver) never get applied to the local player model.
+        if (name === 'success' && client.state === 'login' && selfUuid) {
+          const real = formatUuid(selfUuid)
+          if (data && data.uuid !== real) {
+            data = { ...data, uuid: real }
+            trace(`SHIM login.success uuid -> ${real}`)
+          }
+        }
         if (!preludeSent && name === 'finish_configuration' && client.state === 'configuration') {
           preludeSent = true
           if (captured.featureFlags) {
@@ -414,4 +426,11 @@ export function startProxy(opts: ProxyOpts): ProxySession {
 
 function sanitize(s: string): string {
   return s.replace(/[^a-zA-Z0-9._-]+/g, '_')
+}
+
+/** Mojang returns UUIDs as 32 hex chars; minecraft-protocol expects 8-4-4-4-12. */
+function formatUuid(hex: string): string {
+  const h = hex.replace(/-/g, '')
+  if (h.length !== 32) return hex
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
