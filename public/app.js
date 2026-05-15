@@ -26,7 +26,9 @@ function connectWs() {
     } else if (m.type === 'log') {
       log(m.level, m.msg, m.ts)
     } else if (m.type === 'chunk') {
-      addChunk(m.dim, m.x, m.z)
+      queueChunk(m.dim, m.x, m.z)
+    } else if (m.type === 'chunks') {
+      for (const c of m.list) queueChunk(c.dim, c.x, c.z)
     } else if (m.type === 'dim') {
       if (!state.chunksByDim[m.dim]) state.chunksByDim[m.dim] = new Set()
       state.activeDim = m.dim
@@ -133,17 +135,42 @@ function resize() {
 }
 new ResizeObserver(resize).observe(canvas)
 
-function addChunk(dim, x, z) {
-  if (!state.chunksByDim[dim]) state.chunksByDim[dim] = new Set()
-  const set = state.chunksByDim[dim]
-  const key = `${x},${z}`
-  if (set.has(key)) return
-  set.add(key)
-  if (!state.activeDim || !state.chunksByDim[state.activeDim] || state.chunksByDim[state.activeDim].size === 0) {
-    state.activeDim = dim
-    renderDimTabs()
+// Chunks come in bursts (100+/sec). Buffer them and drain once per animation
+// frame so we redraw at most 60Hz no matter how fast the bridge fills.
+const chunkQueue = []
+let rafPending = false
+
+function queueChunk(dim, x, z) {
+  chunkQueue.push([dim, x, z])
+  if (!rafPending) {
+    rafPending = true
+    requestAnimationFrame(drainChunkQueue)
   }
-  if (dim === state.activeDim) drawChunk(x, z)
+}
+
+function drainChunkQueue() {
+  rafPending = false
+  let activeDimDirty = false
+  let needTabRender = false
+  for (const [dim, x, z] of chunkQueue) {
+    if (!state.chunksByDim[dim]) {
+      state.chunksByDim[dim] = new Set()
+      needTabRender = true
+    }
+    const set = state.chunksByDim[dim]
+    const key = `${x},${z}`
+    if (set.has(key)) continue
+    set.add(key)
+    if (!state.activeDim || state.chunksByDim[state.activeDim]?.size === 0) {
+      state.activeDim = dim
+      needTabRender = true
+    }
+    if (dim === state.activeDim) activeDimDirty = true
+  }
+  chunkQueue.length = 0
+  if (needTabRender) renderDimTabs()
+  // One redraw covers every chunk added this frame instead of N fillRects.
+  if (activeDimDirty) redraw()
   updateStats()
 }
 

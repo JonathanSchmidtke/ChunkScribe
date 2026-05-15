@@ -1,5 +1,5 @@
 import { log } from '../util/log'
-import { emit } from '../gui/bus'
+import { emitChunk } from '../gui/bus'
 import type { PhaseTracker } from '../phase'
 import type { WorldStore } from '../world/store'
 
@@ -64,8 +64,8 @@ export class ChunkCapture {
 
       this.getStore().setColumn(p.x, p.z, chunk)
       this.capturedThisSession++
-      emit({ type: 'chunk', x: p.x, z: p.z, dim: this.phase.dimensionName })
-      if (this.capturedThisSession % 100 === 0) {
+      emitChunk({ x: p.x, z: p.z, dim: this.phase.dimensionName })
+      if (this.capturedThisSession % 500 === 0) {
         log.info(`captured ${this.capturedThisSession} chunks (current dim: ${this.phase.dimensionName})`)
       }
     } catch (e) {
