@@ -103,25 +103,55 @@ export class ContainerCapture {
       .map((it, i) => itemToNbt(it, i))
       .filter(Boolean)
 
-    // Patch the chunk's block entity NBT for this position
+    // Block entity NBT MUST have id + x + y + z fields. Without them, MC's
+    // chunk loader logs "invalid type: null" and refuses the entire chunk →
+    // black hole on the map. Map the open-screen window type to the most
+    // likely block id; coords are in WORLD space (not chunk-local).
+    const blockId = windowTypeToBlockId(w.windowType)
     const beNbt = {
       type: 'compound',
       name: '',
       value: {
+        id: { type: 'string', value: blockId },
+        x:  { type: 'int', value: w.pos.x },
+        y:  { type: 'int', value: w.pos.y },
+        z:  { type: 'int', value: w.pos.z },
         Items: { type: 'list', value: { type: 'compound', value: nbtItems } },
-        // id/x/y/z are filled in by Minecraft when it loads; chunk format
-        // stores BE in a section-indexed list.
       },
     }
     try {
       chunk.setBlockEntity?.({ x: localX, y: w.pos.y, z: localZ }, beNbt)
       this.totalCaptured++
-      log.info(`captured container @ ${w.pos.x},${w.pos.y},${w.pos.z} (${nbtItems.length} items)`)
+      log.info(`captured container ${blockId} @ ${w.pos.x},${w.pos.y},${w.pos.z} (${nbtItems.length} items)`)
       emit({ type: 'log', level: 'info', msg: `container saved (${nbtItems.length} items)`, ts: Date.now() })
     } catch (e) {
       log.dbg('container write failed:', (e as Error).message)
     }
   }
+}
+
+/**
+ * Map the open_screen `windowType` to a Minecraft block id used in chunk
+ * block-entity NBT. The window type tells us the GUI shape (e.g. 9x3 slots)
+ * but the actual block could be chest/barrel/double-chest etc. We pick the
+ * most common single-block id per shape — wrong-guess is harmless (MC will
+ * still parse the chunk; the inventory just won't show if the block doesn't
+ * match), but a MISSING id breaks the entire chunk.
+ */
+function windowTypeToBlockId(wt: string | undefined): string {
+  if (!wt) return 'minecraft:chest'
+  const t = wt.toLowerCase()
+  if (t.includes('shulker'))        return 'minecraft:shulker_box'
+  if (t.includes('hopper'))         return 'minecraft:hopper'
+  if (t.includes('blast_furnace'))  return 'minecraft:blast_furnace'
+  if (t.includes('smoker'))         return 'minecraft:smoker'
+  if (t.includes('furnace'))        return 'minecraft:furnace'
+  if (t.includes('brewing'))        return 'minecraft:brewing_stand'
+  if (t.includes('beacon'))         return 'minecraft:beacon'
+  if (t.includes('dispenser'))      return 'minecraft:dispenser'
+  if (t.includes('dropper'))        return 'minecraft:dropper'
+  // generic_9x{1,2,3,4,5,6} — chest is the most common backing block
+  return 'minecraft:chest'
 }
 
 function emptyItem() { return { present: false } }

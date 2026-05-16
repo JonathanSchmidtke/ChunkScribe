@@ -406,6 +406,9 @@ export function startProxy(opts: ProxyOpts): ProxySession {
     stopped = true
     running = false
     log.info(`session teardown: ${reason}`)
+    // Commit any chunks pending their batch_finished ack so the final
+    // flush includes them (otherwise the last 1-2 batches would be lost).
+    try { capture.drainPendingChunks() } catch (e) { log.warn('drain failed:', e) }
     saver.flush(capture.stores).catch(e => log.err('final flush failed:', e))
     try { activeClient?.end(reason) } catch {}
     try { target?.end(reason) } catch {}

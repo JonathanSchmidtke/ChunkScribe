@@ -58,6 +58,10 @@ export class Capture {
     return out
   }
 
+  /** Force-commit any chunks still pending a batch_finished ack — called
+   *  on Stop so we don't lose the last partial batch. */
+  drainPendingChunks() { this.chunks.drainPending() }
+
   /** Coord lists for replay to a fresh GUI client (so the chunk map can
    *  rebuild itself after a page reload). */
   chunkCoordsByDim(): Record<string, [number, number][]> {
@@ -105,6 +109,9 @@ export class Capture {
 
       case 'unload_chunk':
         return this.chunks.onUnload(data)
+
+      case 'chunk_batch_finished':
+        return this.chunks.onBatchFinished()
 
       case 'block_change':
       case 'block_update':

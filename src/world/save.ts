@@ -116,13 +116,18 @@ export class WorldSaver {
           const nbtEntity = entityToNbt(e)
           if (!nbtEntity) { dropped++; continue }
           try {
-            if (typeof chunk.addEntity === 'function') chunk.addEntity(nbtEntity)
-            else if (Array.isArray(chunk.entities))    chunk.entities.push(nbtEntity)
-            else {
-              (chunk as any).__entities ??= []
-              ;(chunk as any).__entities.push(nbtEntity)
+            // Only write entities through prismarine-chunk's official API.
+            // The previous __entities sidecar attached non-standard data to the
+            // chunk object which the anvil writer happily serialised — vanilla
+            // MC then failed to parse those chunks ("malformed NBT") so the
+            // whole region became a black hole on the map. Drop instead.
+            if (typeof chunk.addEntity === 'function') {
+              chunk.addEntity(nbtEntity); written++
+            } else if (Array.isArray(chunk.entities)) {
+              chunk.entities.push(nbtEntity); written++
+            } else {
+              dropped++
             }
-            written++
           } catch { dropped++ }
         }
       }
@@ -257,3 +262,48 @@ function bigintToLongPair(v: bigint): [number, number] {
   return [hi, lo]
 }
 function absBig(v: bigint): bigint { return v < 0n ? -v : v }
+
+/** Vanilla worldgen preset for one of the 3 standard dimensions. Used as
+ *  the default WorldGenSettings.dimensions entries so MC's strict codec
+ *  finds an "Overworld settings" entry on level.dat load. */
+function vanillaDimension(typeId: string): any {
+  let generator: any
+  if (typeId === 'minecraft:the_end') {
+    generator = {
+      type: 'compound',
+      value: {
+        type: { type: 'string', value: 'minecraft:noise' },
+        biome_source: {
+          type: 'compound',
+          value: { type: { type: 'string', value: 'minecraft:the_end' } },
+        },
+        settings: { type: 'string', value: 'minecraft:end' },
+      },
+    }
+  } else {
+    // overworld + nether both use multi_noise with a preset
+    const preset = typeId === 'minecraft:the_nether' ? 'minecraft:nether' : 'minecraft:overworld'
+    const settings = typeId === 'minecraft:the_nether' ? 'minecraft:nether' : 'minecraft:overworld'
+    generator = {
+      type: 'compound',
+      value: {
+        type: { type: 'string', value: 'minecraft:noise' },
+        biome_source: {
+          type: 'compound',
+          value: {
+            type:   { type: 'string', value: 'minecraft:multi_noise' },
+            preset: { type: 'string', value: preset },
+          },
+        },
+        settings: { type: 'string', value: settings },
+      },
+    }
+  }
+  return {
+    type: 'compound',
+    value: {
+      type: { type: 'string', value: typeId },
+      generator,
+    },
+  }
+}

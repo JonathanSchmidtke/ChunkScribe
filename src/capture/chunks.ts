@@ -15,6 +15,9 @@ export class ChunkCapture {
   private ChunkClass: any = null
   private registry: any = null
   private capturedThisSession = 0
+  /** Chunks received in the current batch, not yet committed to the store.
+   *  Held back so a periodic flush can't serialise a half-streamed chunk. */
+  private pendingBatch = new Map<string, { x: number; z: number; chunk: any }>()
 
   constructor(
     private phase: PhaseTracker,
@@ -62,12 +65,12 @@ export class ChunkCapture {
         }
       }
 
-      this.getStore().setColumn(p.x, p.z, chunk)
-      this.capturedThisSession++
-      emitChunk({ x: p.x, z: p.z, dim: this.phase.dimensionName })
-      if (this.capturedThisSession % 500 === 0) {
-        log.info(`captured ${this.capturedThisSession} chunks (current dim: ${this.phase.dimensionName})`)
-      }
+      // Stash in pendingBatch instead of committing straight to the store.
+      // Without this, the periodic flush can serialise a chunk before target
+      // finished sending all its block updates (chunk_batch_finished hasn't
+      // arrived yet) → partial NBT on disk → MC crashes on chunk read.
+      // Commit happens in onBatchFinished below.
+      this.pendingBatch.set(`${p.x},${p.z}`, { x: p.x, z: p.z, chunk })
     } catch (e) {
       log.dbg(`chunk ${p.x},${p.z} parse failed: ${(e as Error).message}`)
     }
@@ -78,4 +81,24 @@ export class ChunkCapture {
     // we want to keep what we've already seen. Just trace it.
     log.dbg('unload', p.chunkX ?? p.x, p.chunkZ ?? p.z)
   }
+
+  /** Called when target sends chunk_batch_finished — every chunk in the
+   *  pending batch is now fully delivered and safe to write to disk. */
+  onBatchFinished() {
+    if (this.pendingBatch.size === 0) return
+    const store = this.getStore()
+    const dim = this.phase.dimensionName
+    for (const { x, z, chunk } of this.pendingBatch.values()) {
+      store.setColumn(x, z, chunk)
+      this.capturedThisSession++
+      emitChunk({ x, z, dim })
+    }
+    if (this.capturedThisSession % 500 < this.pendingBatch.size) {
+      log.info(`captured ${this.capturedThisSession} chunks (current dim: ${dim})`)
+    }
+    this.pendingBatch.clear()
+  }
+
+  /** Force-commit any pending chunks (final flush at session end). */
+  drainPending() { this.onBatchFinished() }
 }
