@@ -64,6 +64,9 @@
       <label>Name in Minecraft saves
         <input type="text" id="transform-name" placeholder="ChunkScribe World" />
       </label>
+      <label>Minecraft saves folder
+        <input type="text" id="transform-saves-dir" placeholder="(default: %APPDATA%\.minecraft\saves)" />
+      </label>
       <label class="checkbox">
         <input type="checkbox" id="transform-void" />
         Void around scanned (don't generate missing chunks)
@@ -72,7 +75,7 @@
         <button id="btn-transform" class="primary">Transform</button>
         <button id="btn-refresh-scans">↻</button>
       </div>
-      <p class="hint" id="saves-hint">Saves to <code id="saves-dir">…</code></p>
+      <p class="hint" id="saves-hint">Will land in <code id="saves-dir">…</code></p>
     </aside>
 
     <section class="panel map-panel">

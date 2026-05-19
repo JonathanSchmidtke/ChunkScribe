@@ -25,7 +25,7 @@ export class EntityTypeResolver {
     // prismarine-registry surfaces entity data in a few shapes across versions.
     // Try each shape; whichever populates first wins.
     this.ingest(registry.entitiesArray, (e: any) => e?.id, (e: any) => e?.name)
-    this.ingest(registry.entitiesByName, (_e: any, _k: string) => undefined, (e: any) => e?.name, /*useEntityIdField*/ true)
+    this.ingest(registry.entitiesByName, (_e: any, _k?: string) => undefined, (e: any) => e?.name, /*useEntityIdField*/ true)
     if (this.byId.size === 0 && registry.entities) {
       // Object indexed by id
       for (const key of Object.keys(registry.entities)) {

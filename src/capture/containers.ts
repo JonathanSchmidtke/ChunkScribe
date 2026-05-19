@@ -170,7 +170,12 @@ function itemToNbt(it: any, slotIdx: number): any | null {
     id:    { type: 'string', value: id },
     Count: { type: 'byte',   value: it.itemCount ?? it.count ?? 1 },
   }
-  if (it.nbtData) out.tag = it.nbtData
-  if (it.components) out.components = it.components
+  // Intentionally drop it.nbtData and it.components: those are
+  // minecraft-protocol's NETWORK-form shapes, not NBT compounds. Writing them
+  // verbatim produces malformed strings inside the chunk's NBT (e.g. a
+  // List<String> whose UTF length prefix doesn't match the bytes) and MC
+  // rejects the entire chunk with `EOFException in DataInputStream.readUTF()`
+  // — visible as a black-hole chunk exactly where the container was. We lose
+  // enchants / lore / custom names; the chunk loads. Worth the trade.
   return out
 }

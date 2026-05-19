@@ -11,6 +11,10 @@ export class PhaseTracker {
   phase: Phase = 'login'
   dimensionName = 'minecraft:overworld'
   dimensionType = 'minecraft:overworld'
+  /** Index of the active dim_type in the captured `minecraft:dimension_type`
+   *  registry. 1.21+ SpawnInfo carries this as a varint; we resolve it to
+   *  a full name (dimensionType) via RegistryCapture at capture time. */
+  dimensionTypeIndex = -1
   worldHeight = 384
   minY = -64
   viewDistance = 12
@@ -28,21 +32,32 @@ export class PhaseTracker {
   onPlayLogin(p: any) {
     // 1.21.x bundles dimension/seed/gamemode inside a worldState SpawnInfo
     // sub-container; older versions had them at the top level. Read both.
+    // SpawnInfo.dimension is a varint INDEX into the dim_type registry —
+    // RegistryCapture resolves it to a full name in Capture.adoptDimensionGeometry.
     const ws = p.worldState ?? {}
     this.dimensionName = ws.name ?? p.worldName ?? p.dimension?.name ?? p.dimension ?? this.dimensionName
-    this.dimensionType = ws.dimensionType ?? p.worldType ?? p.dimensionType ?? this.dimensionType
+    this.dimensionTypeIndex = pickDimTypeIndex(ws, p, this.dimensionTypeIndex)
     this.viewDistance = p.viewDistance ?? this.viewDistance
     this.hashedSeed = BigInt((ws.hashedSeed ?? p.hashedSeed ?? 0) as any)
     const gm = ws.gamemode ?? p.gameMode
     this.gameMode = typeof gm === 'number' ? gm : this.gameMode
-    log.info(`play login: dim=${this.dimensionName} type=${this.dimensionType} view=${this.viewDistance}`)
+    log.info(`play login: dim=${this.dimensionName} typeIdx=${this.dimensionTypeIndex} view=${this.viewDistance}`)
   }
 
   onRespawn(p: any) {
     const prev = this.dimensionName
     const ws = p.worldState ?? {}
     this.dimensionName = ws.name ?? p.worldName ?? p.dimension ?? this.dimensionName
-    this.dimensionType = ws.dimensionType ?? p.worldType ?? p.dimensionType ?? this.dimensionType
-    if (prev !== this.dimensionName) log.info(`dimension change: ${prev} -> ${this.dimensionName}`)
+    this.dimensionTypeIndex = pickDimTypeIndex(ws, p, this.dimensionTypeIndex)
+    if (prev !== this.dimensionName) log.info(`dimension change: ${prev} -> ${this.dimensionName} (typeIdx=${this.dimensionTypeIndex})`)
   }
+}
+
+/** SpawnInfo.dimension is a varint in 1.21; older schemas exposed it as
+ *  `worldType` / `dimensionType` strings. Prefer the numeric index when
+ *  present and fall through. Strings are handled by the caller via
+ *  registry lookup. */
+function pickDimTypeIndex(ws: any, p: any, prev: number): number {
+  const candidate = ws?.dimension ?? p?.worldType ?? p?.dimensionType
+  return typeof candidate === 'number' ? candidate : prev
 }

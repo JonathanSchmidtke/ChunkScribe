@@ -26,6 +26,14 @@ export interface DecodedMetadata {
   TicksFrozen?: number
   Health?: number             // LivingEntity index 9
   IsBaby?: boolean            // common index 16/17 on age-able mobs
+  /** Slime / MagmaCube / Phantom Size, read from index 16 when numeric.
+   *  Without this written to disk NBT, MC reads getInt("Size")=0 and
+   *  scales the entity model to nothing → wireframe-only hitbox. */
+  SizeInt?: number
+  /** block_display block_state at index 23 (1.20+). Without it, block
+   *  displays draw nothing. Stored as a registry index from the server's
+   *  block_state registry; downstream lookup happens at save time. */
+  DisplayBlockState?: number
 }
 
 const POSE_NAMES = [
@@ -74,6 +82,14 @@ export function decodeEntityMetadata(meta: any): DecodedMetadata {
       case 16:
       case 17:
         if (typeof v === 'boolean') out.IsBaby = v
+        // Same index doubles as Size on Slime / MagmaCube / Phantom.
+        // entityToNbt picks which interpretation to use based on the
+        // resolved type name.
+        else if (typeof v === 'number') out.SizeInt = v
+        break
+
+      case 23: // block_display.block_state
+        if (typeof v === 'number') out.DisplayBlockState = v
         break
     }
   }

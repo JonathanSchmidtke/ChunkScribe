@@ -96,7 +96,7 @@ export function startProxy(opts: ProxyOpts): ProxySession {
 
   const phase = new PhaseTracker()
   const saver = new WorldSaver(worldDir, opts.version, phase)
-  const capture = new Capture(phase, saver, opts.version)
+  const capture = new Capture(phase, saver, opts.version, worldDir)
 
   let activeServer: any = null
   let activeClient: any = null
@@ -173,6 +173,16 @@ export function startProxy(opts: ProxyOpts): ProxySession {
 
   target.on('packet', (data: any, meta: any) => {
     phase.observe(meta.state)
+    // Self-ack target keep_alive ASAP so the proxy never times out, regardless
+    // of whether MC client is connected. Gridlock has a tight timeout (~25s).
+    // With keepAlive: false in createClient, minecraft-protocol doesn't ack
+    // for us — we have to mirror the keepAliveId back to target ourselves.
+    // (We still forward to MC below for state consistency; double-ack is fine
+    // — the server treats subsequent acks for the same id as no-ops.)
+    if (meta.state === 'play' && meta.name === 'keep_alive') {
+      try { target.write('keep_alive', { keepAliveId: data.keepAliveId }) }
+      catch (e) { trace(`KEEPALIVE_SELF_ACK_FAIL: ${(e as Error).message}`) }
+    }
     try { capture.handle(meta, data) }
     catch (e) { trace(`CAPTURE_FAIL ${meta.name}: ${(e as Error).message}`) }
 

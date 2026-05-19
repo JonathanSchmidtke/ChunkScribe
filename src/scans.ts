@@ -5,6 +5,7 @@ import os from 'node:os'
 import zlib from 'node:zlib'
 import { promisify } from 'node:util'
 import { log } from './util/log'
+import { loadSavedSavesDir, saveSavesDir } from './settings'
 
 const gzip = promisify(zlib.gzip)
 const gunzip = promisify(zlib.gunzip)
@@ -90,6 +91,10 @@ async function inspectScan(root: string, name: string): Promise<ScanInfo | null>
 }
 
 export function defaultSavesDir(): string {
+  // Prefer the user's last-chosen folder (e.g. an ATLauncher instance) so
+  // transforms keep landing in the same MC install across restarts.
+  const saved = loadSavedSavesDir()
+  if (saved) return saved
   // Standard Windows MC location; user can override at transform time.
   const appdata = process.env.APPDATA
   if (appdata) return path.join(appdata, '.minecraft', 'saves')
@@ -124,6 +129,9 @@ function defaultOutputDir(): string {
  */
 export async function transformToWorld(opts: TransformOpts): Promise<TransformResult> {
   const savesDir = opts.savesDir || defaultSavesDir()
+  // Remember the chosen folder so the next transform defaults to it,
+  // even after a proxy restart.
+  if (opts.savesDir) saveSavesDir(opts.savesDir)
   const cleanName = sanitizeName(opts.destName) || 'ChunkScribe World'
   const destPath = path.join(savesDir, cleanName)
 
@@ -144,14 +152,14 @@ export async function transformToWorld(opts: TransformOpts): Promise<TransformRe
     } catch {}
     await fsp.cp(opts.scanPath, destPath, { recursive: true })
     log.info(`transformed ${opts.scanPath} -> ${destPath}`)
-    // Datapack dims (gridlock:nether, hub:plots, etc.) live in
-    // dimensions/<ns>/<name>/region in the scan. Vanilla MC can't load
-    // them without the datapack, so remap to the vanilla nearest equivalent
-    // (DIM-1 / DIM1 / root) based on the name. Skip / dump on failure.
-    const remapped = await remapCustomDimensions(destPath)
-    if (remapped.length) {
-      log.info(`remapped custom dims to vanilla: ${remapped.join(', ')}`)
-    }
+    // Custom dims (gridlock:nether, gridlock:overworld, gridlock:end) stay
+    // put in dimensions/<ns>/<name>/region. The chunkscribe datapack defines
+    // each dim with its captured dim_type, so MC loads them at the right
+    // Y range. The old behaviour squashed them into DIM-1/DIM1/root which
+    // re-bound them to vanilla dim_types — Gridlock's nether built on
+    // Y -64..60 then floated at the wrong height in vanilla nether
+    // (min_y=0, height=128). Only filter out lobby-like dims.
+    await cleanLobbyDims(destPath)
   } catch (e) {
     return { ok: false, error: `copy failed: ${(e as Error).message}` }
   }
@@ -169,6 +177,22 @@ export async function transformToWorld(opts: TransformOpts): Promise<TransformRe
     } catch (e) {
       log.warn(`level.dat rename failed: ${(e as Error).message}`)
     }
+  }
+
+  // Bundle the captured resource pack(s) into the world. Modern MC reads
+  // `<world>/resources.zip` automatically; without it, custom-modeled
+  // blocks (chests, furniture, etc.) on servers that use heavy resource
+  // packs render as invisible — the block model is overridden to empty
+  // and the visible appearance comes from pack assets only.
+  try {
+    const packsDir = path.join(opts.scanPath, 'resourcepacks')
+    if (await fsp.stat(packsDir).then(s => s.isDirectory()).catch(() => false)) {
+      const { bundlePacksIntoWorld } = await import('./capture/resourcePacks')
+      const r = await bundlePacksIntoWorld(packsDir, destPath)
+      if (r.bundled) log.info(`bundled resource pack into world: <world>/resources.zip (+${r.copied} extra)`)
+    }
+  } catch (e) {
+    log.warn(`bundle resource pack failed: ${(e as Error).message}`)
   }
 
   // Secondary copy into Documents/ChunkScribe/worlds/<name> so the user keeps
@@ -220,20 +244,38 @@ async function patchLevelDatName(dir: string, name: string) {
   const data = tag.value?.Data?.value
   if (!data) return
   data.LevelName = { type: 'string', value: name }
-  // The proxy writes WorldGenSettings with an EMPTY dimensions compound. MC
-  // 1.21.x refuses to load with "IllegalStateException: Overworld settings
-  // missing" because vanilla expects at least the three default dims defined.
-  // Strip it entirely so vanilla MC fills it with the standard preset on
-  // first load. (Void-mode patch overwrites with its own preset and is unaffected.)
-  if (data.WorldGenSettings) delete data.WorldGenSettings
+  // The saver writes a full WorldGenSettings.dimensions compound with the
+  // vanilla 3 dims AND every custom dim the player visited (pointing at
+  // the captured dim_type). DO NOT strip it here — that drops the custom
+  // dims back to undefined and leaves the chunks in dimensions/<ns>/<dim>/
+  // orphaned. The chunkscribe datapack defines the same dims for
+  // redundancy, but level.dat is the source of truth on first load.
+  await enableChunkscribePack(tag)
   await writeLevelDat(dir, tag)
 }
 
+/** Enable the chunkscribe datapack the saver wrote into <world>/datapacks/.
+ *  Custom biomes (and server-overridden vanilla biome colors) only take
+ *  effect if the datapack is in Data.DataPacks.Enabled. */
+async function enableChunkscribePack(tag: any) {
+  try {
+    const mod = await import('./world/datapack')
+    mod.enableDatapackInLevelDat(tag)
+  } catch (e) {
+    log.warn(`enable datapack failed: ${(e as Error).message}`)
+  }
+}
+
 /**
- * Replace the overworld dimension generator with a void-flat preset so any
- * chunk the player visits that ISN'T in the captured region files stays
- * empty (a few barrier-less air layers), instead of being generated fresh
- * with vanilla terrain. Mircokroon's tool does the same trick.
+ * Void-mode level.dat patch. The saver already writes a full WGS compound
+ * with void-flat overworld + nether + end + every custom dim the player
+ * visited. Previously we REPLACED that with just the three vanilla dims,
+ * which dropped every gridlock:* entry → MC re-generated minecraft:overworld
+ * as a void-flat and spawned the player at (0, -6, 0) in the void.
+ *
+ * Now we just patch the LevelName and switch the vanilla 3 dims' generators
+ * to void-flat (in case the saver wrote them with `minecraft:noise` for the
+ * non-void path); the saver's custom-dim entries stay untouched.
  */
 async function patchLevelDatForVoid(dir: string, name: string) {
   if (!nbt) return
@@ -244,32 +286,50 @@ async function patchLevelDatForVoid(dir: string, name: string) {
 
   data.LevelName = { type: 'string', value: name }
 
-  // Build the dimensions compound with a void-flat overworld + nether + end.
-  // We have to enumerate all three so vanilla doesn't fall back to defaults.
-  data.WorldGenSettings = {
-    type: 'compound',
-    value: {
-      seed: data.WorldGenSettings?.value?.seed ?? { type: 'long', value: [0, 0] },
-      generate_features: { type: 'byte', value: 0 },
-      dimensions: {
-        type: 'compound',
-        value: {
-          'minecraft:overworld':   voidDimension('minecraft:overworld'),
-          'minecraft:the_nether':  voidDimension('minecraft:the_nether'),
-          'minecraft:the_end':     voidDimension('minecraft:the_end'),
-        },
-      },
-    },
+  const dims = data.WorldGenSettings?.value?.dimensions?.value
+  if (dims) {
+    for (const k of ['minecraft:overworld', 'minecraft:the_nether', 'minecraft:the_end'] as const) {
+      dims[k] = voidDimension(k)
+    }
   }
 
+  await enableChunkscribePack(tag)
   await writeLevelDat(dir, tag)
 }
 
 /**
- * Walk dimensions/<ns>/<name>/ under the destination and move each datapack
- * dim's region files into the vanilla folder (DIM-1 / DIM1 / root) that
- * matches its name. Without this, datapack dims appear as black holes when
- * the user opens the world without the server's datapack.
+ * Drop dimension folders that look like server-side lobbies / waiting rooms.
+ * The datapack approach (default since v0.9.20) preserves every other custom
+ * dim verbatim — we only remove lobby junk so the world isn't cluttered with
+ * empty void chunks the player can teleport into by accident.
+ */
+async function cleanLobbyDims(root: string): Promise<void> {
+  const SKIP = /\b(limbo|lobby|hub|spawn_area|waiting|queue|game_lobby)\b/i
+  const dimsDir = path.join(root, 'dimensions')
+  let nsEntries: fs.Dirent[]
+  try { nsEntries = await fsp.readdir(dimsDir, { withFileTypes: true }) }
+  catch { return }
+  for (const ns of nsEntries) {
+    if (!ns.isDirectory()) continue
+    const nsPath = path.join(dimsDir, ns.name)
+    let dims: fs.Dirent[]
+    try { dims = await fsp.readdir(nsPath, { withFileTypes: true }) } catch { continue }
+    for (const dim of dims) {
+      if (!dim.isDirectory()) continue
+      const tag = `${ns.name}/${dim.name}`.toLowerCase()
+      if (SKIP.test(tag)) {
+        try { await fsp.rm(path.join(nsPath, dim.name), { recursive: true, force: true }) } catch {}
+        log.info(`removed lobby-like dim: ${ns.name}:${dim.name}`)
+      }
+    }
+  }
+}
+
+/**
+ * LEGACY (pre-v0.9.20): walk dimensions/<ns>/<name>/ under the destination
+ * and move each datapack dim's region files into the vanilla folder
+ * (DIM-1 / DIM1 / root) that matches its name. Kept for reference / future
+ * "vanilla-mode" transform flag; not called from the default code path.
  *
  * Heuristic: name (case-insensitive, ns part included) containing "nether"
  * → DIM-1, "end" → DIM1, "overworld"/anything else → root.

@@ -114,8 +114,20 @@ async function refreshScans() {
       select.appendChild(opt)
     }
   }
-  if (r.savesDir) $('saves-dir').textContent = r.savesDir
+  if (r.savesDir) {
+    $('saves-dir').textContent = r.savesDir
+    // Pre-fill the override input with the persisted/default value so the
+    // user can see and edit it. Empty input = use default.
+    const inp = $('transform-saves-dir')
+    if (inp && !inp.value) inp.value = r.savesDir
+  }
 }
+
+// Live-update the "Will land in" hint as the user types a custom path.
+$('transform-saves-dir').addEventListener('input', () => {
+  const v = $('transform-saves-dir').value.trim()
+  if (v) $('saves-dir').textContent = v
+})
 
 $('scan-select').onchange = () => {
   const opt = $('scan-select').selectedOptions[0]
@@ -131,12 +143,13 @@ $('btn-transform').onclick = async () => {
   if (!scanPath) { alert('No scan selected.'); return }
   const destName = $('transform-name').value.trim() || 'ChunkScribe World'
   const voidUnscanned = $('transform-void').checked
+  const savesDir = $('transform-saves-dir').value.trim() || undefined
   $('btn-transform').disabled = true
   log('info', `transforming ${scanPath} -> Minecraft saves ("${destName}", void=${voidUnscanned})…`)
   const r = await fetch('/api/transform', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scanPath, destName, voidUnscanned }),
+    body: JSON.stringify({ scanPath, destName, voidUnscanned, savesDir }),
   }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }))
   $('btn-transform').disabled = false
   if (r.ok) {

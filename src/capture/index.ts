@@ -9,6 +9,7 @@ import { WorldStateCapture } from './worldState'
 import { ContainerCapture } from './containers'
 import { EntityCapture } from './entities'
 import { EntityTypeResolver } from './entityTypes'
+import { ResourcePackCapture } from './resourcePacks'
 import { WorldStore } from '../world/store'
 import type { WorldSaver } from '../world/save'
 
@@ -23,12 +24,19 @@ export class Capture {
   readonly worldState = new WorldStateCapture()
   readonly containers: ContainerCapture
   readonly mobs: EntityCapture
+  readonly resourcePacks: ResourcePackCapture
+  /** dimensionName -> dimensionType (e.g. "gridlock:nether" -> "gridlock:nether_dimtype").
+   *  Tracked so the datapack writer knows which dim_type each captured dim uses.
+   *  Without this, custom dims fall back to vanilla `the_nether` dim_type with
+   *  different min_y / height → "nether roof at Y=60, void below" rendering. */
+  readonly dimTypeByDim: Map<string, string> = new Map()
   private readonly chunks: ChunkCapture
   private readonly blocks: BlockUpdateCapture
   private readonly blockEntities: BlockEntityCapture
 
-  constructor(private phase: PhaseTracker, private saver: WorldSaver, version: string) {
-    this.chunks        = new ChunkCapture(phase, () => this.activeStore(), version)
+  constructor(private phase: PhaseTracker, private saver: WorldSaver, version: string, scanRoot: string) {
+    this.chunks        = new ChunkCapture(phase, () => this.activeStore(), version, this.registry)
+    this.resourcePacks = new ResourcePackCapture(scanRoot)
     this.blocks        = new BlockUpdateCapture(() => this.activeStore())
     this.blockEntities = new BlockEntityCapture(() => this.activeStore())
     this.containers    = new ContainerCapture(() => this.activeStore())
@@ -38,6 +46,8 @@ export class Capture {
     saver.attachWorldState(this.worldState)
     saver.attachEntities(this.mobs)
     saver.attachContainers(this.containers)
+    saver.attachChunkRegistry(() => this.chunks.registry)
+    saver.attachDimMapping(() => this.dimTypeByDim)
   }
 
   private activeStore(): WorldStore {
@@ -86,6 +96,9 @@ export class Capture {
         case 'registry_data':         return this.registry.onRegistry(data)
         case 'feature_flags':         return this.registry.onFeatureFlags(data)
         case 'select_known_packs':    return // server is asking, client answers — no capture
+        case 'add_resource_pack':
+        case 'resource_pack_send':
+        case 'resource_pack_push':    return this.resourcePacks.onPush(data)
       }
       return
     }
@@ -93,6 +106,10 @@ export class Capture {
     if (state !== 'play') return
 
     switch (name) {
+      case 'add_resource_pack':
+      case 'resource_pack_send':
+      case 'resource_pack_push':    return this.resourcePacks.onPush(data)
+
       case 'login':
         this.phase.onPlayLogin(data)
         this.adoptDimensionGeometry()
@@ -181,11 +198,35 @@ export class Capture {
   }
 
   private adoptDimensionGeometry() {
+    // SpawnInfo.dimension on 1.21+ is a varint index into the dim_type
+    // registry, not a name string. Resolve it via the captured ordered
+    // list before doing anything else — without this, every custom dim
+    // looks like "minecraft:overworld" to us and the saver writes wrong
+    // Y range / fog properties into the datapack.
+    const resolved = this.registry.dimensionTypeByIndex(this.phase.dimensionTypeIndex)
+    if (resolved) this.phase.dimensionType = resolved
+
     const geom = this.registry.dimensionGeometry(this.phase.dimensionType)
     if (geom) {
       this.phase.worldHeight = geom.worldHeight
       this.phase.minY = geom.minY
-      log.dbg(`dim geometry: height=${geom.worldHeight} minY=${geom.minY}`)
+      log.info(`dim geometry: ${this.phase.dimensionType}  height=${geom.worldHeight} minY=${geom.minY}`)
+    } else {
+      log.warn(`dim geometry: NO resolution for ${this.phase.dimensionType} (idx=${this.phase.dimensionTypeIndex}) — using phase defaults height=${this.phase.worldHeight} minY=${this.phase.minY}`)
+    }
+    // Remember which dim_type this dim uses so the saver can write a
+    // dimension JSON pointing at the right type definition. Critical for
+    // non-vanilla height ranges (Gridlock's nether sits inside an
+    // overworld-style 384-tall dim with a bedrock ceiling at Y=60).
+    // Skip lobby-like dims so they don't end up in level.dat WGS where
+    // they'd just be empty void entries cluttering the dim list.
+    const skipLobby = /\b(limbo|lobby|hub|spawn_area|waiting|queue|game_lobby)\b/i
+    if (this.phase.dimensionName && this.phase.dimensionType && !skipLobby.test(this.phase.dimensionName)) {
+      const prev = this.dimTypeByDim.get(this.phase.dimensionName)
+      if (prev !== this.phase.dimensionType) {
+        this.dimTypeByDim.set(this.phase.dimensionName, this.phase.dimensionType)
+        log.info(`dim mapping: ${this.phase.dimensionName} -> ${this.phase.dimensionType}`)
+      }
     }
   }
 }
